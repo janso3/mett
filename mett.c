@@ -24,9 +24,8 @@ typedef struct line_ {
 } Line;
 
 typedef struct buffer_ {
-	struct buffer_ *next;
-	struct buffer_ *prev;
-	char *name;
+	struct buffer_ *next; struct buffer_ *prev;
+	char *path;
 	Line *lines;
 	Cursor cursor;
 	/* custom line formatting hook */
@@ -36,26 +35,27 @@ typedef struct buffer_ {
 static void die(int);
 static int numplaces(int);
 
-static Buffer *allocbuf();
-static Buffer *lastbuf();
-static int newbuf();
+static Buffer* lastbuf();
+static Buffer* newbuf();
+static void freebuf(Buffer*);
 static int readbuf();
 static int numlines(Buffer*);
 
-static void handleresize();
 static void updatecursor();
+static void repaint();
 
-static void paintbuffer(WINDOW*, Buffer*);
-static void paintstatus();
+static void paintbuf(WINDOW*, Buffer*);
+static void paintstat();
 
 static WINDOW *statuswin;
-static Buffer *bufferlist;
+static Buffer *buflist;
 
 void die(int err) {
 	endwin();
 	exit(err);
 }
 
+/* How many decimal places in a number? */
 int numplaces(int n) {
 	int r = 1;
 	if (n < 0) n = (n == INT_MIN) ? INT_MAX: -n;
@@ -66,27 +66,30 @@ int numplaces(int n) {
 	return r;
 }
 
-Buffer *allocbuf() {
-	return (Buffer*)calloc(0, sizeof(Buffer));
-}
-
-Buffer *lastbuf() {
-	Buffer *cur, *ptr = bufferlist;
-	do {
+/* Get the buffer list head */
+Buffer* lastbuf() {
+	Buffer *cur = NULL, *ptr = buflist;
+	while (ptr && (ptr = ptr->next)){
 		cur = ptr;
-	} while ((ptr = ptr->next));
+	}
 	return cur;
 }
 
-int newbuf() {
-	Buffer *last;
-	last = lastbuf();
-	if (!last) return 0;
-	if (!(last->next = allocbuf())) return 0;
-	last->next->prev = last;
-	return 1;
+/* Create new buffer and insert at start of the list */
+Buffer* newbuf() {
+	Buffer *next = NULL;
+	if (buflist) next = buflist;
+	if (!(buflist = (Buffer*)calloc(1, sizeof(Buffer)))) return NULL;
+	buflist->next = next;
+	buflist->next->prev = buflist;
+	return buflist;
 }
 
+void freebuf(Buffer *buf) {
+	free(buf->path);
+}
+
+/* Read a file into a buffer */
 int readbuf(Buffer *buf, const char *path) {
 	FILE *fp;
 	char *linecnt;
@@ -113,54 +116,71 @@ int readbuf(Buffer *buf, const char *path) {
 		ln->prev = curln;
 	}
 
+	buf->path = (char*)calloc(1, strlen(path)+1);
+	strcpy(buf->path, path);
+
 	free(linecnt);
 	fclose(fp);
 
 	return 1;
 }
 
+/* Number of lines in a buffer */
 int numlines(Buffer *buf) {
-	Line *ln = buf->lines;
+	Line *ln;
 	int n = 0;
-	for (;;) {
+
+	if (!buf) return 0;
+	ln = buf->lines;
+	while (ln) {
 		ln = ln->next;
-		if (!ln) return n;
 		n++;
 	}
-	return -1;
+	return n;
 }
 
+/* Update the cursor position */
 void updatecursor() {
 	//cursor.x = 0;
 	//cursor.y = 10;
 }
 
-void paintstatus() {
-	int row, col, bufsize;
+/* Paint the status bar */
+void paintstat() {
+	int row, col, nlines, bufsize;
 	char textbuf[32];
+	char *bufname = "Untitled";
 
 	getmaxyx(stdscr, row, col);
 	if (use_colors) wattron(statuswin, COLOR_PAIR(PAIR_STATUS_BAR));
+
 	/* background */
 	whline(statuswin, ' ', col);
+
+	/* buffer name, buffer length */
+	nlines = numlines(buflist);
+	if (buflist && buflist->path) bufname = buflist->path;
+	wprintw(statuswin, "%s, %i lines", bufname, nlines);
+
 	/* cursor pos */
 	bufsize = snprintf(textbuf, sizeof(textbuf), "%d:%d", 0, 0/*cursor.y, cursor.x*/);
 	mvwprintw(statuswin, 0, col - bufsize, "%s", textbuf);
 	wrefresh(statuswin);
+
 	if (use_colors) wattroff(statuswin, COLOR_PAIR(PAIR_STATUS_BAR));
 }
 
-void paintbuffer(WINDOW *win, Buffer *buf) {
+/* Paint a buffer onto a window */
+void paintbuf(WINDOW *win, Buffer *buf) {
 	int i, l;
 	int row, col;
 	int nlines, xmargin;
 	Line *ln;
 	Cursor *cur = &buf->cursor;
 
-	cur->startln = 0;
-
 	getmaxyx(stdscr, row, col);
 	nlines = numlines(buf);
+	return;
 	xmargin = line_numbers ? numplaces(nlines)+1 : 0;
 
 	for (i = l = 0, ln = buf->lines; l < row-1 && ln->next; ++i, ln = ln->next) {
@@ -174,53 +194,53 @@ void paintbuffer(WINDOW *win, Buffer *buf) {
 	}
 }
 
-void handleresize() {
+/* Repaint the whole screen */
+void repaint() {
 	int row, col;
-
 	clear();
 	refresh();
 	getmaxyx(stdscr, row, col);
 	delwin(statuswin);
 	statuswin = newwin(1, col, row-1, 0);
-	paintstatus();
+	paintbuf(stdscr, buflist);
+	paintstat();
+	refresh();
 }
 
 int main(int argc, char **argv) {
-	int key, row, col;
+	int i, key;
+	int row, col;
+
+	for (i = 1; i < argc; ++i) {
+		readbuf(newbuf(), argv[i]);
+	}
+
+	printf("%s\n", buflist->path);
+	return;
 
 	initscr();
 	noecho();
 	nonl();
 	keypad(stdscr, TRUE);
 	use_default_colors();
+	refresh();
 
 	if (!has_colors()) use_colors = FALSE;
 	if (use_colors) {
 		int i;
 		start_color();
-		for (i = 1; i < NUM_COLOR_PAIRS; i++)
+		for (i = 1; i < NUM_COLOR_PAIRS; ++i)
 			init_pair(i, color_pairs[i][0], color_pairs[i][1]);
 	}
 
-	refresh();
 	getmaxyx(stdscr, row, col);
 	statuswin = newwin(1, col, row-1, 0);
-	paintstatus();
-
-	bufferlist = allocbuf();
-	readbuf(bufferlist, "mett.c");
-	updatecursor();
-
-	paintbuffer(stdscr, bufferlist);
-	refresh();
+	repaint();
 
 	while ((key = wgetch(stdscr)) != ERR) {
 		switch (key) {
-			case 'J':
-				die(0);
-				break;
 			case KEY_RESIZE:
-				handleresize();
+				repaint();
 				break;
 		}
 	}
