@@ -1,6 +1,6 @@
 INCS =
 LIBS = -lncurses
-CFLAGS = $(INCS)
+CFLAGS = $(INCS) -g -O2 -std=c99 -pedantic-errors
 LDFLAGS = $(LIBS)
 
 OBJ = mett.o
