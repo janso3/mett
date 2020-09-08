@@ -1,34 +1,33 @@
 #include <curses.h>
+#include <limits.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <limits.h>
 
 #define MIN(a,b) ((a)<(b)?(a):(b))
 #define MAX(a,b) ((a)>(b)?(a):(b))
 
 typedef enum {
-	MODE_MOVE,
-	MODE_INSERT
+	MODE_NORMAL,
+	MODE_WRITE,
+	MODE_COMMAND
 } Mode;
 
 typedef struct {
 	int x, y;
-	/* the first line drawn from the top */
-	int startln;
 } Cursor;
 
 typedef struct line_ {
 	struct line_ *next, *prev;
-	int length;
-	char *data;
+	char data[];
 } Line;
 
 typedef struct buffer_ {
 	struct buffer_ *next, *prev;
 	char *path;
-	Line *lines;
+	Line *lines, *curline;
 	Cursor cursor;
 	int linexoff;
 	/* custom line formatting hook */
@@ -38,11 +37,14 @@ typedef struct buffer_ {
 typedef struct {
 	int key;
 	void (*fn)();
-	struct {
-		int x, y;
+	union Arg {
+		struct { int x, y; };
+		int i;
+		char *path;
 	} arg;
 } Action;
 
+static void sighandler(int);
 static int numplaces(int);
 
 static Buffer* lastbuf();
@@ -52,22 +54,95 @@ static int readbuf();
 static int numlines(Buffer*);
 
 static void updatecursor();
+static void insert(int);
 
 static void format_c(Buffer*, char*, int);
 static void paintstat();
 static void paintbuf(WINDOW*, Buffer*);
 static void repaint();
 
-static void motion();
+static void quit();
+static void setmode(Action*);
+static void motion(Action*);
+static void seek(Action*);
+static void write(Action*);
 
-static Mode mode;
+static Mode mode = MODE_NORMAL;
 static WINDOW *statuswin;
-static Buffer *buflist;
+static Buffer *buflist = NULL, *curbuf = NULL;
 
+/* We make all the declarations available to the user */
 #include "config.h"
 
-/* How many decimal places in a number? */
+int main(int argc, char **argv) {
+	int i, key;
+	int row, col;
+
+	signal(SIGINT, sighandler);
+
+	for (i = 1; i < argc; ++i) {
+		readbuf(newbuf(), argv[i]);
+	}
+	curbuf = buflist;
+
+	initscr();
+	noecho();
+	nonl();
+	keypad(stdscr, /*TRUE*/FALSE);
+	nodelay(stdscr, TRUE);
+	notimeout(stdscr, TRUE);
+	use_default_colors();
+	clear();
+	refresh();
+
+	if ((use_colors = has_colors())) {
+		start_color();
+		for (i = 1; i < NUM_COLOR_PAIRS; ++i)
+			init_pair(i, color_pairs[i][0], color_pairs[i][1]);
+	}
+
+	getmaxyx(stdscr, row, col);
+	statuswin = newwin(1, col, row-1, 0);
+	repaint();
+
+	for (;;) {
+		if ((key = wgetch(stdscr)) != ERR) {
+			switch (mode) {
+			case MODE_NORMAL:
+				for (i = 0; i < sizeof(buffer_actions) / sizeof(Action); ++i) {
+					if (buflist && key == buffer_actions[i].key)
+						buffer_actions[i].fn(&buffer_actions[i]);
+				}
+				break;
+			case MODE_WRITE:
+				if (key == ESC) mode = MODE_NORMAL;
+				else insert(key);
+				break;
+			case MODE_COMMAND:
+				break;
+			}
+			repaint();
+		}
+	}
+
+	delwin(statuswin);
+	endwin();
+
+	return 0;
+}
+
+void sighandler(int signum) {
+	switch (signum) {
+	case SIGHUP:
+	case SIGKILL:
+	case SIGINT:
+		quit();
+		break;
+	}
+}
+
 int numplaces(int n) {
+	/* How many decimal places in a number? */
 	int r = 1;
 	if (n < 0) n = (n == INT_MIN) ? INT_MAX: -n;
 	while (n > 9) {
@@ -77,7 +152,6 @@ int numplaces(int n) {
 	return r;
 }
 
-/* Get the buffer list head */
 Buffer* lastbuf() {
 	Buffer *cur = NULL, *ptr = buflist;
 	while (ptr && (ptr = ptr->next)){
@@ -86,8 +160,8 @@ Buffer* lastbuf() {
 	return cur;
 }
 
-/* Create new buffer and insert at start of the list */
 Buffer* newbuf() {
+	/* Create new buffer and insert at start of the list */
 	Buffer *next = NULL;
 	if (buflist) next = buflist;
 	if (!(buflist = (Buffer*)calloc(1, sizeof(Buffer)))) return NULL;
@@ -100,7 +174,6 @@ void freebuf(Buffer *buf) {
 	free(buf->path);
 }
 
-/* Read a file into a buffer */
 int readbuf(Buffer *buf, const char *path) {
 	FILE *fp;
 	char *linecnt;
@@ -108,7 +181,7 @@ int readbuf(Buffer *buf, const char *path) {
 	int nlines;
 	Line *ln = NULL;
 
-	ln = buf->lines = (Line*)calloc(sizeof(Line), 1);
+	ln = buf->curline = buf->lines = (Line*)calloc(sizeof(Line)+default_linebuf_size, 1);
 	linecnt = (char*)malloc(len);
 
 	if (!(fp = fopen(path, "r"))) return 0;
@@ -117,12 +190,11 @@ int readbuf(Buffer *buf, const char *path) {
 		size_t nb;
 
 		nb = MAX(len, default_linebuf_size);
-		ln->data = (char*)malloc(nb);
 		strncpy(ln->data, linecnt, len-1);
 		ln->data[len-1] = 0;
 
 		curln = ln;
-		ln->next = (Line*)calloc(sizeof(Line), 1);
+		ln->next = (Line*)calloc(sizeof(Line)+default_linebuf_size, 1);
 		ln = ln->next;
 		ln->prev = curln;
 	}
@@ -139,7 +211,6 @@ int readbuf(Buffer *buf, const char *path) {
 	return 1;
 }
 
-/* Number of lines in a buffer */
 int numlines(Buffer *buf) {
 	Line *ln;
 	int n = 0;
@@ -150,40 +221,56 @@ int numlines(Buffer *buf) {
 		ln = ln->next;
 		n++;
 	}
+
 	return n;
 }
 
 void updatecursor() {
-	if (!buflist) return;
-	move(buflist->cursor.y, buflist->cursor.x + buflist->linexoff);
+	if (!curbuf) return;
+	move(curbuf->cursor.y, curbuf->cursor.x + curbuf->linexoff);
 }
 
-/* Draw a line of C-Code */
+void insert(int key) {
+	int idx, len;
+	char *dst;
+	Line *ln;
+
+	if (!curbuf || !(ln = curbuf->curline)) return;
+	idx = curbuf->cursor.x;
+	len = strlen(ln->data)+1;
+	if (key == 127) {
+		/* TODO: Backspace */
+	}
+	memcpy(ln->data+idx+1, ln->data+idx, len);
+	ln->data[idx] = key;
+	curbuf->cursor.x++;
+}
+
 void format_c(Buffer *buf, char *line, int xoff) {
+	/* Draw a line of C-Code */
 }
 
-/* Paint the status bar */
 void paintstat() {
 	int row, col, nlines, bufsize;
 	Buffer *cur = buflist;
 	char textbuf[32];
 	char *bufname = "Untitled";
-	const char *modes[] = { "MOVE", "INSERT" };
+	const char *modes[] = { "NORMAL", "WRITE", "COMMAND" };
 
 	getmaxyx(stdscr, row, col);
 	if (use_colors) wattron(statuswin, COLOR_PAIR(PAIR_STATUS_BAR));
 
-	/* background */
+	/* Background */
 	whline(statuswin, ' ', col);
 
-	/* buffer name, buffer length */
+	/* Buffer name, buffer length */
 	if (use_colors) wattron(statuswin, COLOR_PAIR(PAIR_STATUS_BAR));
 
 	nlines = numlines(buflist);
-	if (buflist && buflist->path) bufname = buflist->path;
+	if (curbuf && curbuf->path) bufname = curbuf->path;
 	wprintw(statuswin, "%s, %i lines", bufname, nlines);
 
-	/* mode, cursor pos */
+	/* Mode, cursor pos */
 	bufsize = snprintf(textbuf, sizeof(textbuf), "%s %d:%d", modes[mode], cur ? cur->cursor.y : 0, cur ? cur->cursor.x : 0);
 	if (use_colors) wattron(statuswin, COLOR_PAIR(PAIR_STATUS_HIGHLIGHT));
 	mvwprintw(statuswin, 0, col - bufsize, "%s", textbuf);
@@ -194,7 +281,6 @@ void paintstat() {
 	if (use_colors) wattroff(statuswin, COLOR_PAIR(PAIR_STATUS_BAR));
 }
 
-/* Paint a buffer onto a window */
 void paintbuf(WINDOW *win, Buffer *buf) {
 	int i, l;
 	int row, col;
@@ -202,12 +288,11 @@ void paintbuf(WINDOW *win, Buffer *buf) {
 	Cursor *cur;
 
 	if (!buf) return;
-	getmaxyx(stdscr, row, col);
+	getmaxyx(win, row, col);
 	cur = &buf->cursor;
 
-	for (i = l = 0, ln = buf->lines; l < row-1 && ln->next; ++i, ln = ln->next) {
-		if (i < cur->startln) continue;
-		wmove(win, l, 0);
+	ln = buf->lines;
+	for (i = l = 0; l < row-1 && ln->next; ++i, ln = ln->next) {
 		if (use_colors) wattron(win, COLOR_PAIR(PAIR_LINE_NUMBERS));
 		if (line_numbers) wprintw(win, "%d\n", i+1);
 		if (use_colors) wattroff(win, COLOR_PAIR(PAIR_LINE_NUMBERS));
@@ -220,16 +305,26 @@ void paintbuf(WINDOW *win, Buffer *buf) {
 	}
 }
 
-/* Repaint the whole screen */
 void repaint() {
 	int row, col;
 	getmaxyx(stdscr, row, col);
 	delwin(statuswin);
+	clear();
+	refresh();
 	statuswin = newwin(1, col, row-1, 0);
 	paintbuf(stdscr, buflist);
 	paintstat();
 	updatecursor();
-	refresh();
+}
+
+void quit() {
+	delwin(statuswin);
+	endwin();
+	exit(0);
+}
+
+void setmode(Action *ac) {
+	mode = (Mode)ac->arg.i;
 }
 
 void motion(Action *ac) {
@@ -238,57 +333,48 @@ void motion(Action *ac) {
 
 	/* left / right */
 	if (ac->arg.x == -1) {
-		buflist->cursor.x = MAX(buflist->cursor.x-1, 0);
+		curbuf->cursor.x = MAX(curbuf->cursor.x-1, 0);
 	} else if (ac->arg.x == +1) {
-		buflist->cursor.x = MIN(buflist->cursor.x+1, col-buflist->linexoff-1);
+		curbuf->cursor.x = MIN(curbuf->cursor.x+1, col-curbuf->linexoff-1);
 	}
 
 	/* up / down */
-	if (ac->arg.y == -1) {
-		buflist->cursor.y = MAX(buflist->cursor.y-1, 0);
-	} else if (ac->arg.y == +1) {
-		buflist->cursor.y = MIN(buflist->cursor.y+1, row-2);
+	if (ac->arg.y == -1 && curbuf->cursor.y) {
+		curbuf->cursor.y--;
+		if (curbuf->curline->prev) curbuf->curline = curbuf->curline->prev;
+	} else if (ac->arg.y == +1 && curbuf->cursor.y < row-2) {
+		curbuf->cursor.y++;
+		if (curbuf->curline->next) curbuf->curline = curbuf->curline->next;
 	}
 }
 
-int main(int argc, char **argv) {
-	int i, key;
-	int row, col;
+void seek(Action *ac) {
+}
 
-	mode = MODE_MOVE;
-	for (i = 1; i < argc; ++i) {
-		readbuf(newbuf(), argv[i]);
+void write(Action *ac) {
+	FILE *src, *bak;
+	Line *ln;
+
+	if (!ac->arg.path && !curbuf->path) {
+		/* TODO: Let the user enter the path */
+		return;
 	}
 
-	initscr();
-	noecho();
-	nonl();
-	keypad(stdscr, TRUE);
-	use_default_colors();
-	refresh();
+	if (backup_on_write
+			&& (bak = fopen(backup_path, "w+"))
+			&& (src = fopen(curbuf->path, "r"))) {
+		char c;
+		while((c = getc(src)) != EOF)
+			fputc(c, bak);
 
-	if (!has_colors()) use_colors = FALSE;
-	if (use_colors) {
-		start_color();
-		for (i = 1; i < NUM_COLOR_PAIRS; ++i)
-			init_pair(i, color_pairs[i][0], color_pairs[i][1]);
+		fclose(bak);
+		fclose(src);
 	}
 
-	getmaxyx(stdscr, row, col);
-	statuswin = newwin(1, col, row-1, 0);
-	repaint();
-
-	while ((key = wgetch(stdscr)) != ERR) {
-		for (i = 0; i < sizeof(buffer_actions) / sizeof(Action); ++i) {
-			if (buflist && key == buffer_actions[i].key) {
-				buffer_actions[i].fn(&buffer_actions[i]);
-			}
-		}
-		repaint();
+	if (!(src = fopen(ac->arg.path ? ac->arg.path : curbuf->path, "w+"))) return;
+	for (ln = curbuf->lines; ln && ln->next; ln = ln->next) {
+		fputs(ln->data, src);
 	}
 
-	delwin(statuswin);
-	endwin();
-
-	return 0;
+	fclose(src);
 }
