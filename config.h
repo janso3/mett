@@ -1,3 +1,13 @@
+/*
+ * Edit this file to change settings and recompile
+ * afterwards. Note that some combinations may be
+ * unstable and can make the editor unusable.
+ *
+ * Feel free to add your own function definitions here!
+ */
+
+#define ESC 27
+
 enum ColorPair {
 	PAIR_STATUS_BAR = 1,
 	PAIR_STATUS_HIGHLIGHT,
@@ -20,7 +30,11 @@ const Action buffer_actions[] = {
 	{  'j',        motion,     { .y = +1 } },
 	{  'k',        motion,     { .y = -1 } },
 	{  'l',        motion,     { .x = +1 } },
-	{  KEY_RESIZE, repaint,    {       0 } },
+	{  ESC,        setmode,    { .i = MODE_NORMAL } },
+	{  'i',        setmode,    { .i = MODE_WRITE } },
+	{  'c',        setmode,    { .i = MODE_COMMAND } },
+	{  's',        write,      { .path = NULL } },
+	{  KEY_RESIZE, repaint,    { 0 } },
 };
 
 static bool use_colors = TRUE;
@@ -33,8 +47,9 @@ static bool line_numbers = TRUE;
  */
 static bool floating_cursor = TRUE;
 
-/* Scroll down if cursor reached the middle of the screen */
-static bool follow_cursor = TRUE;
-
 /* Maximum line size in bytes until reallocation */
 const unsigned default_linebuf_size = 256;
+
+/* Copy buffer to backup_path before overwriting file */
+const bool backup_on_write = TRUE;
+const char *backup_path = "/tmp/.mett-backup";
