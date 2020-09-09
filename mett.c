@@ -17,6 +17,7 @@ typedef enum {
 
 typedef struct {
 	int x, y;
+	int starty;
 } Cursor;
 
 typedef struct line_ {
@@ -119,6 +120,7 @@ int main(int argc, char **argv) {
 				else insert(key);
 				break;
 			case MODE_COMMAND:
+				if (key == ESC) mode = MODE_NORMAL;
 				break;
 			}
 			repaint();
@@ -227,7 +229,7 @@ int numlines(Buffer *buf) {
 
 void updatecursor() {
 	if (!curbuf) return;
-	move(curbuf->cursor.y, curbuf->cursor.x + curbuf->linexoff);
+	move(curbuf->cursor.y-curbuf->cursor.starty, curbuf->cursor.x + curbuf->linexoff);
 }
 
 void insert(int key) {
@@ -293,8 +295,9 @@ void paintbuf(WINDOW *win, Buffer *buf) {
 
 	ln = buf->lines;
 	for (i = l = 0; l < row-1 && ln->next; ++i, ln = ln->next) {
+		if (i < curbuf->cursor.starty) continue;
 		if (use_colors) wattron(win, COLOR_PAIR(PAIR_LINE_NUMBERS));
-		if (line_numbers) wprintw(win, "%d\n", i+1);
+		if (line_numbers) wprintw(win, "%d\n", i);
 		if (use_colors) wattroff(win, COLOR_PAIR(PAIR_LINE_NUMBERS));
 		if (buf->formatln) {
 			buf->formatln(buf, ln->data, buf->linexoff);
@@ -340,9 +343,17 @@ void motion(Action *ac) {
 
 	/* up / down */
 	if (ac->arg.y == -1 && curbuf->cursor.y) {
+		if (curbuf->cursor.y <= curbuf->cursor.starty) {
+			/* Scroll the view up */
+			curbuf->cursor.starty--;
+		}
 		curbuf->cursor.y--;
 		if (curbuf->curline->prev) curbuf->curline = curbuf->curline->prev;
-	} else if (ac->arg.y == +1 && curbuf->cursor.y < row-2) {
+	} else if (ac->arg.y == +1) {
+		if (curbuf->cursor.y - curbuf->cursor.starty >= row-2) {
+			/* Scroll the view down */
+			curbuf->cursor.starty++;
+		}
 		curbuf->cursor.y++;
 		if (curbuf->curline->next) curbuf->curline = curbuf->curline->next;
 	}
