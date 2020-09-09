@@ -181,7 +181,6 @@ int readbuf(Buffer *buf, const char *path) {
 
 	ln = buf->curline = buf->lines = (Line*)calloc(sizeof(Line)+default_linebuf_size, 1);
 	if (!(fp = fopen(path, "r"))) return 0;
-
 	while (fgets(linecnt, len, fp) == linecnt) {
 		Line *curln = ln;
 		strncpy(ln->data, linecnt, len-1);
@@ -194,10 +193,8 @@ int readbuf(Buffer *buf, const char *path) {
 
 	nlines = numlines(buf);
 	buf->linexoff = line_numbers ? numplaces(nlines)+1 : 0;
-
 	buf->path = (char*)calloc(1, strlen(path)+1);
 	strcpy(buf->path, path);
-
 	fclose(fp);
 
 	return 1;
@@ -248,21 +245,35 @@ void insert(int key) {
 		/* Insert into current buffer */
 		int idx, len;
 		Line *ln;
-
 		if (!curbuf || !(ln = curbuf->curline)) return;
 		idx = curbuf->cursor.x;
 		len = strlen(ln->data)+1;
-		memcpy(ln->data+idx+1, ln->data+idx, len);
-		ln->data[idx] = key;
-		curbuf->cursor.x++;
+		switch (key) {
+		case KEY_BACKSPACE:
+			if (idx) {
+				memcpy(ln->data+idx-1, ln->data+idx, len);
+				curbuf->cursor.x--;
+			}
+			break;
+		case '\n':
+			break;
+		default:
+			memcpy(ln->data+idx+1, ln->data+idx, len);
+			ln->data[idx] = key;
+			curbuf->cursor.x++;
+			break;
+		}
 	}
 }
 
 void runcmd(char *buf) {
 	int i;
 	for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
-		if (buffer_actions[i].cmd && !strncmp(buffer_actions[i].cmd, buf, 80)) {
-			buffer_actions[i].fn(&buffer_actions[i]);
+		char *end;
+		long cnt;
+		if (!(cnt = strtol(buf, &end, 10))) cnt = 1;
+		if (buffer_actions[i].cmd && !strncmp(buffer_actions[i].cmd, end, 80)) {
+			for (; cnt; cnt--) buffer_actions[i].fn(&buffer_actions[i]);
 		}
 	}
 }
