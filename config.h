@@ -1,4 +1,6 @@
 #define ESC 27
+#define DEL 127
+#define COLOR_BG -1
 
 enum ColorPair {
 	PAIR_STATUS_BAR = 1,
@@ -10,10 +12,12 @@ enum ColorPair {
 const short color_pairs[NUM_COLOR_PAIRS][2] = {
 	/* Foreground       Background */
 	{  0,               0 },
-	{  COLOR_YELLOW,    COLOR_BLACK },
-	{  COLOR_GREEN,     COLOR_MAGENTA },
-	{  COLOR_YELLOW,    -1 },
+	{  COLOR_YELLOW,    COLOR_BG },
+	{  COLOR_GREEN,     COLOR_BLACK },
+	{  COLOR_YELLOW,    COLOR_BG },
 };
+
+const char manual_path[] = "readme.txt";
 
 /*
  * See mett.c for function declarations.
@@ -22,16 +26,22 @@ const short color_pairs[NUM_COLOR_PAIRS][2] = {
  * other than Action*.
  */
 const Action buffer_actions[] = {
-	/* Command    Shortcut      Function   Argument */
-	{  "left",    'h',          motion,    { .x = -1 } },
-	{  "down",    'j',          motion,    { .y = +1 } },
-	{  "up",      'k',          motion,    { .y = -1 } },
-	{  "right",   'l',          motion,    { .x = +1 } },
-	{  NULL,      ESC,          setmode,   { .i = MODE_NORMAL } },
-	{  NULL,      'i',          setmode,   { .i = MODE_WRITE } },
-	{  NULL,      'c',          setmode,   { .i = MODE_COMMAND } },
-	{  "save",    's',          save,      { .path = NULL } },
-	{  NULL,      KEY_RESIZE,   repaint,   {{0}} },
+	/* Command     Shortcut      Function    Argument(s) */
+	{  "left",     'h',          motion,     { .x = -1 } },
+	{  "down",     'j',          motion,     { .y = +1 } },
+	{  "up",       'k',          motion,     { .y = -1 } },
+	{  "right",    'l',          motion,     { .x = +1 } },
+	{  NULL,       ESC,          setmode,    { .i = MODE_NORMAL } },
+	{  NULL,       'i',          setmode,    { .i = MODE_WRITE } },
+	{  NULL,       'c',          setmode,    { .i = MODE_COMMAND } },
+	{  "save",     's',          save,       { .v = NULL } },
+	{  "bs",       'y',          insert,     { .i = KEY_BACKSPACE } },
+	{  "del",      'x',          insert,     { .i = DEL } },
+	{  "manual",   '?',          readfile,   { .v = (void*)manual_path } },
+	{  "help",     '?',          readfile,   { .v = (void*)manual_path } },
+	{  "quit",     '\0',         quit,       {{ 0 }} },
+	{  "exit",     '\0',         quit,       {{ 0 }} },
+	{  "repaint",  KEY_RESIZE,   repaint,    {{ 0 }} },
 };
 
 static bool use_colors = TRUE;
@@ -52,3 +62,6 @@ const int tab_width = 2;
 /* Copy buffer to backup_path before overwriting file */
 const bool backup_on_write = TRUE;
 const char *backup_path = "/tmp/.mett-backup";
+
+const int cmd_history_size = 16;
+const int max_cmd_repetition = 65536;
