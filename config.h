@@ -50,6 +50,8 @@ static bool floating_cursor = TRUE;
 /* Maximum line size in bytes until reallocation */
 const unsigned default_linebuf_size = 256;
 
+const unsigned tab_width = 2;
+
 /* Copy buffer to backup_path before overwriting file */
 const bool backup_on_write = TRUE;
 const char *backup_path = "/tmp/.mett-backup";
