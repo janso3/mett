@@ -1,5 +1,4 @@
 #include <curses.h>
-#include <limits.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -36,6 +35,7 @@ typedef struct buffer_ {
 } Buffer;
 
 typedef struct {
+	char *cmd;
 	int key;
 	void (*fn)();
 	union Arg {
@@ -48,7 +48,6 @@ typedef struct {
 static void sighandler(int);
 static int numplaces(int);
 
-static Buffer* lastbuf();
 static Buffer* newbuf();
 static void freebuf(Buffer*);
 static int readbuf();
@@ -56,21 +55,25 @@ static int numlines(Buffer*);
 
 static void updatecursor();
 static void insert(int);
+static void runcmd(char*);
 
 static void format_c(Buffer*, char*, int);
 static void paintstat();
-static void paintbuf(WINDOW*, Buffer*);
+static void paintbuf(Buffer*);
+static void paintcmd();
 static void repaint();
 
 static void quit();
 static void setmode(Action*);
-static void motion(Action*);
 static void seek(Action*);
-static void write(Action*);
+static void save(Action*);
+
+static void motion(Action*);
 
 static Mode mode = MODE_NORMAL;
-static WINDOW *statuswin;
+static WINDOW *bufwin, *statuswin, *cmdwin;
 static Buffer *buflist = NULL, *curbuf = NULL;
+static char cmdbuf[80];
 
 /* We make all the declarations available to the user */
 #include "config.h"
@@ -80,16 +83,13 @@ int main(int argc, char **argv) {
 	int row, col;
 
 	signal(SIGINT, sighandler);
-
 	for (i = 1; i < argc; ++i) {
-		readbuf(newbuf(), argv[i]);
+		readbuf((curbuf = newbuf()), argv[i]);
 	}
-	curbuf = buflist;
 
 	initscr();
 	noecho();
-	nonl();
-	keypad(stdscr, /*TRUE*/FALSE);
+	keypad(stdscr, TRUE);
 	nodelay(stdscr, TRUE);
 	notimeout(stdscr, TRUE);
 	use_default_colors();
@@ -103,14 +103,16 @@ int main(int argc, char **argv) {
 	}
 
 	getmaxyx(stdscr, row, col);
-	statuswin = newwin(1, col, row-1, 0);
+	statuswin = newwin(1, col, 0, 0);
+	bufwin = newwin(row-2, col, 1, 0);
+	cmdwin = newwin(1, col, row-1, 0);
 	repaint();
 
 	for (;;) {
 		if ((key = wgetch(stdscr)) != ERR) {
 			switch (mode) {
 			case MODE_NORMAL:
-				for (i = 0; i < sizeof(buffer_actions) / sizeof(Action); ++i) {
+				for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
 					if (buflist && key == buffer_actions[i].key)
 						buffer_actions[i].fn(&buffer_actions[i]);
 				}
@@ -121,12 +123,15 @@ int main(int argc, char **argv) {
 				break;
 			case MODE_COMMAND:
 				if (key == ESC) mode = MODE_NORMAL;
+				else insert(key);
 				break;
 			}
 			repaint();
 		}
 	}
 
+	delwin(cmdwin);
+	delwin(bufwin);
 	delwin(statuswin);
 	endwin();
 
@@ -144,22 +149,13 @@ void sighandler(int signum) {
 }
 
 int numplaces(int n) {
-	/* How many decimal places in a number? */
-	int r = 1;
-	if (n < 0) n = (n == INT_MIN) ? INT_MAX: -n;
+	/* How many visual places in a number? */
+	int r = n < 0 ? 2 : 1;
 	while (n > 9) {
 	    n /= 10;
 	    r++;
 	}
 	return r;
-}
-
-Buffer* lastbuf() {
-	Buffer *cur = NULL, *ptr = buflist;
-	while (ptr && (ptr = ptr->next)){
-		cur = ptr;
-	}
-	return cur;
 }
 
 Buffer* newbuf() {
@@ -178,24 +174,19 @@ void freebuf(Buffer *buf) {
 
 int readbuf(Buffer *buf, const char *path) {
 	FILE *fp;
-	char *linecnt;
-	size_t len = default_linebuf_size;
+	const size_t len = default_linebuf_size;
+	char linecnt[len];
 	int nlines;
 	Line *ln = NULL;
 
 	ln = buf->curline = buf->lines = (Line*)calloc(sizeof(Line)+default_linebuf_size, 1);
-	linecnt = (char*)malloc(len);
-
 	if (!(fp = fopen(path, "r"))) return 0;
-	while (fgets(linecnt, len, fp) == linecnt) {
-		Line *curln;
-		size_t nb;
 
-		nb = MAX(len, default_linebuf_size);
+	while (fgets(linecnt, len, fp) == linecnt) {
+		Line *curln = ln;
 		strncpy(ln->data, linecnt, len-1);
 		ln->data[len-1] = 0;
 
-		curln = ln;
 		ln->next = (Line*)calloc(sizeof(Line)+default_linebuf_size, 1);
 		ln = ln->next;
 		ln->prev = curln;
@@ -207,7 +198,6 @@ int readbuf(Buffer *buf, const char *path) {
 	buf->path = (char*)calloc(1, strlen(path)+1);
 	strcpy(buf->path, path);
 
-	free(linecnt);
 	fclose(fp);
 
 	return 1;
@@ -216,36 +206,65 @@ int readbuf(Buffer *buf, const char *path) {
 int numlines(Buffer *buf) {
 	Line *ln;
 	int n = 0;
-
 	if (!buf) return 0;
 	ln = buf->lines;
 	while (ln) {
 		ln = ln->next;
 		n++;
 	}
-
 	return n;
 }
 
 void updatecursor() {
+	int row, col;
 	if (!curbuf) return;
-	move(curbuf->cursor.y-curbuf->cursor.starty, curbuf->cursor.x + curbuf->linexoff);
+	getmaxyx(stdscr, row, col);
+	if (mode == MODE_COMMAND) {
+		int len = strlen(cmdbuf);
+		move(row-1, len+2);
+	} else {
+		move(curbuf->cursor.y - curbuf->cursor.starty + 1, curbuf->cursor.x + curbuf->linexoff);
+	}
 }
 
 void insert(int key) {
-	int idx, len;
-	char *dst;
-	Line *ln;
+	if (mode == MODE_COMMAND) {
+		/* Insert into command-line */
+		int len = strlen(cmdbuf);
+		switch (key) {
+		case KEY_BACKSPACE:
+			cmdbuf[len-1] = 0;
+			break;
+		case '\n':
+			mode = MODE_NORMAL;
+			runcmd(cmdbuf);
+			memset(cmdbuf, 0, sizeof(cmdbuf));
+			break;
+		default:
+			cmdbuf[len] = (char)key;
+			break;
+		}
+	} else {
+		/* Insert into current buffer */
+		int idx, len;
+		Line *ln;
 
-	if (!curbuf || !(ln = curbuf->curline)) return;
-	idx = curbuf->cursor.x;
-	len = strlen(ln->data)+1;
-	if (key == 127) {
-		/* TODO: Backspace */
+		if (!curbuf || !(ln = curbuf->curline)) return;
+		idx = curbuf->cursor.x;
+		len = strlen(ln->data)+1;
+		memcpy(ln->data+idx+1, ln->data+idx, len);
+		ln->data[idx] = key;
+		curbuf->cursor.x++;
 	}
-	memcpy(ln->data+idx+1, ln->data+idx, len);
-	ln->data[idx] = key;
-	curbuf->cursor.x++;
+}
+
+void runcmd(char *buf) {
+	int i;
+	for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
+		if (buffer_actions[i].cmd && !strncmp(buffer_actions[i].cmd, buf, 80)) {
+			buffer_actions[i].fn(&buffer_actions[i]);
+		}
+	}
 }
 
 void format_c(Buffer *buf, char *line, int xoff) {
@@ -283,22 +302,20 @@ void paintstat() {
 	if (use_colors) wattroff(statuswin, COLOR_PAIR(PAIR_STATUS_BAR));
 }
 
-void paintbuf(WINDOW *win, Buffer *buf) {
+void paintbuf(Buffer *buf) {
 	int i, l;
 	int row, col;
 	Line *ln;
-	Cursor *cur;
 
 	if (!buf) return;
-	getmaxyx(win, row, col);
-	cur = &buf->cursor;
+	getmaxyx(bufwin, row, col);
 	ln = buf->lines;
 
-	for (i = l = 0; l < row-1 && ln->next; ++i, ln = ln->next) {
+	for (i = l = 0; l < row && ln->next; ++i, ln = ln->next) {
 		if (i < curbuf->cursor.starty) continue;
-		if (use_colors) wattron(win, COLOR_PAIR(PAIR_LINE_NUMBERS));
-		if (line_numbers) wprintw(win, "%d\n", i);
-		if (use_colors) wattroff(win, COLOR_PAIR(PAIR_LINE_NUMBERS));
+		if (use_colors) wattron(bufwin, COLOR_PAIR(PAIR_LINE_NUMBERS));
+		if (line_numbers) wprintw(bufwin, "%d\n", i);
+		if (use_colors) wattroff(bufwin, COLOR_PAIR(PAIR_LINE_NUMBERS));
 		if (buf->formatln) {
 			buf->formatln(buf, ln->data, buf->linexoff);
 		} else {
@@ -309,12 +326,12 @@ void paintbuf(WINDOW *win, Buffer *buf) {
 				switch (c) {
 				case '\t':
 					for (j = 0; j < tab_width; ++j) {
-						mvwaddch(win, l, xpos, ' ');
+						mvwaddch(bufwin, l, xpos, ' ');
 						xpos++;
 					}
 					break;
 				default:
-					mvwaddch(win, l, xpos, c);
+					mvwaddch(bufwin, l, xpos, c);
 					xpos++;
 					break;
 				}
@@ -322,18 +339,34 @@ void paintbuf(WINDOW *win, Buffer *buf) {
 		}
 		l++;
 	}
+
+	wrefresh(bufwin);
+}
+
+void paintcmd() {
+	if (use_colors) wattron(cmdwin, COLOR_PAIR(PAIR_STATUS_HIGHLIGHT));
+	wprintw(cmdwin, "$");
+	if (use_colors) wattroff(cmdwin, COLOR_PAIR(PAIR_STATUS_HIGHLIGHT));
+	wprintw(cmdwin, " %s", cmdbuf);
+	wrefresh(cmdwin);
 }
 
 void repaint() {
 	int row, col;
 	getmaxyx(stdscr, row, col);
 	delwin(statuswin);
+	delwin(cmdwin);
+	delwin(bufwin);
 	clear();
 	refresh();
-	statuswin = newwin(1, col, row-1, 0);
-	paintbuf(stdscr, buflist);
+	statuswin = newwin(1, col, 0, 0);
+	bufwin = newwin(row-2, col, 1, 0);
+	cmdwin = newwin(1, col, row-1, 0);
+	paintbuf(buflist);
 	paintstat();
+	paintcmd();
 	updatecursor();
+	refresh();
 }
 
 void quit() {
@@ -348,7 +381,7 @@ void setmode(Action *ac) {
 
 void motion(Action *ac) {
 	int row, col;
-	getmaxyx(stdscr, row, col);
+	getmaxyx(bufwin, row, col);
 
 	/* left / right */
 	if (ac->arg.x == -1) {
@@ -366,7 +399,7 @@ void motion(Action *ac) {
 		curbuf->cursor.y--;
 		if (curbuf->curline->prev) curbuf->curline = curbuf->curline->prev;
 	} else if (ac->arg.y == +1) {
-		if (curbuf->cursor.y - curbuf->cursor.starty >= row-2) {
+		if (curbuf->cursor.y - curbuf->cursor.starty >= row-1) {
 			/* Scroll the view down */
 			curbuf->cursor.starty++;
 		}
@@ -378,7 +411,7 @@ void motion(Action *ac) {
 void seek(Action *ac) {
 }
 
-void write(Action *ac) {
+void save(Action *ac) {
 	FILE *src, *bak;
 	Line *ln;
 
