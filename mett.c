@@ -292,8 +292,8 @@ void paintbuf(WINDOW *win, Buffer *buf) {
 	if (!buf) return;
 	getmaxyx(win, row, col);
 	cur = &buf->cursor;
-
 	ln = buf->lines;
+
 	for (i = l = 0; l < row-1 && ln->next; ++i, ln = ln->next) {
 		if (i < curbuf->cursor.starty) continue;
 		if (use_colors) wattron(win, COLOR_PAIR(PAIR_LINE_NUMBERS));
@@ -302,7 +302,23 @@ void paintbuf(WINDOW *win, Buffer *buf) {
 		if (buf->formatln) {
 			buf->formatln(buf, ln->data, buf->linexoff);
 		} else {
-			mvwprintw(win, l, buf->linexoff, "%s", ln->data);
+			/* Default line formatting */
+			int i, j, xpos = buf->linexoff, len = strlen(ln->data);
+			for (i = 0; i < len; ++i) {
+				const char c = ln->data[i];
+				switch (c) {
+				case '\t':
+					for (j = 0; j < tab_width; ++j) {
+						mvwaddch(win, l, xpos, ' ');
+						xpos++;
+					}
+					break;
+				default:
+					mvwaddch(win, l, xpos, c);
+					xpos++;
+					break;
+				}
+			}
 		}
 		l++;
 	}
