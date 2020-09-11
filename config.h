@@ -39,8 +39,8 @@ const Action buffer_actions[] = {
 	{  "del",      'x',          insert,     { .i = DEL } },
 	{  "manual",   '?',          readfile,   { .v = (void*)manual_path } },
 	{  "help",     '?',          readfile,   { .v = (void*)manual_path } },
-	{  "quit",     '\0',         quit,       {{ 0 }} },
-	{  "exit",     '\0',         quit,       {{ 0 }} },
+	{  "quit",     'q',          quit,       {{ 0 }} },
+	{  "exit",     'q',          quit,       {{ 0 }} },
 	{  "repaint",  KEY_RESIZE,   repaint,    {{ 0 }} },
 };
 

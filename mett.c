@@ -222,9 +222,6 @@ void mupdatecursor() {
 	getmaxyx(stdscr, row, col);
 
 	/* Count number of tabs in line */
-	ln = mode == M
-	for () {
-	}
 
 	if (mode == MODE_COMMAND) {
 		int len = strlen(cmdbuf->data);
@@ -287,12 +284,11 @@ void mruncmd(char *buf) {
 		long cnt;
 		if (!(cnt = MIN(strtol(buf, &cmd, 10), max_cmd_repetition))) cnt = 1;
 		if (buffer_actions[i].cmd) {
-			/* Both full commands and shortcuts are allowed */
-			int rel = strncmp(buffer_actions[i].cmd, cmd, 80);
-			/* TODO: Determine if we have, for example, 's' or "save" */
-			if (rel < 0) {
-			} else if(rel > 0) {
-			} else {
+			/* Check for valid command */
+			if (/* Either the single-char keyboard shortcut... */
+					(strlen(cmd) == 1 && buffer_actions[i].key == cmd[0])
+					/* ...or the full command */
+					|| !strncmp(buffer_actions[i].cmd, cmd, 80)) {
 				long j;
 				for (j = 0; j < cnt; ++j) buffer_actions[i].fn(&buffer_actions[i]);
 			}
