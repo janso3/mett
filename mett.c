@@ -26,14 +26,14 @@ typedef struct line_ {
 	char data[];
 } Line;
 
+struct formatter_;
 typedef struct buffer_ {
 	struct buffer_ *next, *prev;
 	char *path;
 	Line *lines, *curline;
 	Cursor cursor;
 	int linexoff;
-	/* custom line formatting hook */
-	void (*formatln)(struct buffer_*, char*, int);
+	struct formatter_ *formatln;
 } Buffer;
 
 typedef struct {
@@ -46,6 +46,11 @@ typedef struct {
 		void *v;
 	} arg;
 } Action;
+
+typedef struct formatter_ {
+	char *suffix;
+	void (*linefn)(Buffer*, char*, int, int);
+} Formatter;
 
 /* Internal functions */
 static void msighandler(int);
@@ -61,7 +66,7 @@ static void minsert(int);
 static void mrepeat(Action*, int);
 static void mruncmd(char*);
 
-static void mformat_c(Buffer*, char*, int);
+static void mformat_c(Buffer*, char*, int, int);
 static void mpaintstat();
 static void mpaintbuf(Buffer*);
 static void mpaintcmd();
@@ -73,15 +78,17 @@ static void setmode(Action*);
 static void save(Action*);
 static void readfile(Action*);
 
+static void command(Action*);
 static void motion(Action*);
+static void bufsel(Action*);
 static void insert(Action*);
 
 /* Global variables */
 static Mode mode = MODE_NORMAL;
 static WINDOW *bufwin, *statuswin, *cmdwin;
-static Buffer *buflist = NULL, *curbuf = NULL;
+static Buffer *buflist, *curbuf;
 static Line *cmdbuf;
-static int repnum = 0;
+static int repcnt = 0;
 
 /* We make all the declarations available to the user */
 #include "config.h"
@@ -90,8 +97,8 @@ int main(int argc, char **argv) {
 	int i, key;
 	int row, col;
 
-	cmdbuf = (Line*)calloc(1, sizeof(Line)+80);
-	cmdbuf->length = 80;
+	cmdbuf = (Line*)calloc(1, sizeof(Line)+default_linebuf_size);
+	cmdbuf->length = default_linebuf_size;
 
 	signal(SIGINT, msighandler);
 	for (i = 1; i < argc; ++i) {
@@ -99,6 +106,7 @@ int main(int argc, char **argv) {
 	}
 
 	initscr();
+	clear();
 	noecho();
 	keypad(stdscr, TRUE);
 	nodelay(stdscr, TRUE);
@@ -121,17 +129,20 @@ int main(int argc, char **argv) {
 		if ((key = wgetch(stdscr)) != ERR) {
 			switch (mode) {
 			case MODE_NORMAL:
+				/* Special keys will cancel action sequences */
+				if (key == ESC || key == LF) {
+					repcnt = 0;
+				}
+
 				/* Number keys are reserved for repetition */
 				if (isdigit(key)) {
-					repnum = 10 * repnum + (key - '0');
+					repcnt = MIN(10 * repcnt + (key - '0'), max_cmd_repetition);
 				} else {
 					for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
-						if (buflist && key == buffer_actions[i].key) {
-							mrepeat((Action*)&buffer_actions[i], repnum ? repnum : 1);
-							repnum = 0;
-							break;
-						}
+						if (buflist && key == buffer_actions[i].key)
+							mrepeat((Action*)&buffer_actions[i], repcnt ? repcnt : 1);
 					}
+					repcnt = 0;
 				}
 				break;
 			case MODE_WRITE:
@@ -146,8 +157,6 @@ int main(int argc, char **argv) {
 			repaint();
 		}
 	}
-
-	quit();
 
 	return 0;
 }
@@ -174,7 +183,7 @@ int mnumplaces(int n) {
 
 Buffer* mnewbuf() {
 	/* Create new buffer and insert at start of the list */
-	Buffer *next = NULL;
+	Buffer *next = NULL, *head, *cur;
 	if (buflist) next = buflist;
 	if (!(buflist = (Buffer*)calloc(1, sizeof(Buffer)))) return NULL;
 	buflist->next = next;
@@ -194,6 +203,7 @@ int mreadbuf(Buffer *buf, const char *path) {
 	Line *ln = NULL;
 
 	ln = buf->curline = buf->lines = (Line*)calloc(sizeof(Line)+default_linebuf_size, 1);
+	ln->length = default_linebuf_size;
 	if (!(fp = fopen(path, "r"))) return 0;
 	while (fgets(linecnt, len, fp) == linecnt) {
 		Line *curln = ln;
@@ -201,6 +211,7 @@ int mreadbuf(Buffer *buf, const char *path) {
 		ln->data[len-1] = 0;
 
 		ln->next = (Line*)calloc(sizeof(Line)+default_linebuf_size, 1);
+		ln->length = default_linebuf_size;
 		ln = ln->next;
 		ln->prev = curln;
 	}
@@ -208,6 +219,7 @@ int mreadbuf(Buffer *buf, const char *path) {
 	nlines = mnumlines(buf);
 	buf->linexoff = line_numbers ? mnumplaces(nlines)+1 : 0;
 	buf->path = (char*)calloc(1, strlen(path)+1);
+	//buf->formatln = mformat_c;
 	strcpy(buf->path, path);
 	fclose(fp);
 
@@ -227,19 +239,25 @@ int mnumlines(Buffer *buf) {
 }
 
 void mupdatecursor() {
-	Line *ln;
-	int i, row, col, ntabs;
+	int row, col;
 	if (!curbuf) return;
 	getmaxyx(stdscr, row, col);
-
-	/* Count number of tabs in line */
 
 	if (mode == MODE_COMMAND) {
 		int len = strlen(cmdbuf->data);
 		move(row-1, len+2);
 	} else {
+		Line *ln;
+		int i, ntabs;
+
+		/* Count number of tabs until cursor */
+		ln = curbuf->curline;
+		for (i = ntabs = 0; i < curbuf->cursor.x; ++i) {
+			if (ln->data[i] == '\t') ntabs++;
+		}
+
 		move(curbuf->cursor.y - curbuf->cursor.starty + 1,
-				 curbuf->cursor.x + curbuf->linexoff);
+				 curbuf->cursor.x + curbuf->linexoff + ntabs * (tab_width-1));
 	}
 }
 
@@ -250,6 +268,11 @@ void minsert(int key) {
 		switch (key) {
 		case KEY_BACKSPACE:
 			cmdbuf->data[len-1] = 0;
+			break;
+		/* TODO: cursor movement */
+		case KEY_LEFT:
+			break;
+		case KEY_RIGHT:
 			break;
 		case '\n':
 			mode = MODE_NORMAL;
@@ -279,8 +302,15 @@ void minsert(int key) {
 			break;
 		case '\n':
 			{
-				/* TODO: Insert empty line */
-			} break;
+				Line *old = ln;
+			 	ln = curbuf->curline = (Line*)calloc(1, sizeof(Line)+default_linebuf_size);
+				ln->data[0] = '\n';
+				ln->next = old->next;
+				ln->prev = old;
+				old->next = ln;
+				curbuf->cursor.y++;
+			}
+			break;
 		default:
 			memcpy(ln->data+idx+1, ln->data+idx, len);
 			ln->data[idx] = key;
@@ -293,23 +323,36 @@ void minsert(int key) {
 void mrepeat(Action *ac, int n) {
 	int i;
 	n = MIN(n, max_cmd_repetition);
-	for (i = 0; i < n; i++) {
+	for (i = 0; i < n; ++i) {
 		ac->fn(ac);
 	}
 }
 
 void mruncmd(char *buf) {
+	/* TODO
+	 * Every command can be written either as their keyboard shortcut or
+	 * as the full string. You can chain commands one after the other.
+	 * Every command can be prefixed with a decimal repetition counter.
+	 * Whitespace is ignored.
+	 *
+	 * For example, "10down 5lw  q" will:
+	 * 1) Move down 10 lines
+	 * 2) Move right 5 places
+	 * 3) Write the buffer
+	 * 4) Quit the editor
+	 */
 	int i;
 	for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
-		char *cmd;
-		long cnt;
+		char *cmd = NULL;
+		long cnt, cmdlen;
 		if (!(cnt = strtol(buf, &cmd, 10))) cnt = 1;
+		cmdlen = strlen(cmd);
 		if (buffer_actions[i].cmd) {
 			/* Check for valid command */
 			if (/* Either the single-char keyboard shortcut... */
-					(strlen(cmd) == 1 && buffer_actions[i].key == cmd[0])
+					(cmdlen == 1 && buffer_actions[i].key == cmd[0])
 					/* ...or the full command */
-					|| !strncmp(buffer_actions[i].cmd, cmd, 80)) {
+					|| !strncmp(buffer_actions[i].cmd, cmd, cmdbuf->length)) {
 				long j;
 				mrepeat((Action*)&buffer_actions[i], cnt);
 			}
@@ -317,8 +360,46 @@ void mruncmd(char *buf) {
 	}
 }
 
-void mformat_c(Buffer *buf, char *line, int xoff) {
-	/* Draw a line of C-Code */
+void mformat_c(Buffer *buf, char *line, int xoff, int n) {
+	const char *keywords[] = {
+		"auto", "break", "case", "char", "const", "continue", "default",
+		"do", "double", "else", "enum", "extern", "float", "for",
+		"goto", "if", "inline", "int", "long", "register", "restrict",
+		"return", "short", "signed", "sizeof", "static", "struct", "switch",
+		"typedef", "union", "unsigned", "void", "volatile", "while",
+		"_Alignas", "_Alignof", "_Atomic", "_Bool", "_Complex",
+		"_Generic", "_Imaginary", "_Noreturn", "_Static_assert", "_Thread_local",
+		"asm", "fortran"
+	};
+
+	const char *tokens[] = {
+		"if", "elif", "else", "endif", "defined", "ifdef", "ifndef", "define",
+		"undef", "include", "line", "error", "pragma", "_Pragma"
+	};
+
+	int i, j, xpos = xoff, len = strlen(line);
+
+	/* TODO
+	 * Find valid keywords and tokens before
+	 * printing since we need clear start/end
+	 * points to use colors.
+	 */
+
+	for (i = 0; i < len; ++i) {
+		const char c = line[i];
+		switch (c) {
+		case '\t':
+			for (j = 0; j < tab_width; ++j) {
+				mvwaddch(bufwin, n, xpos, ' ');
+				xpos++;
+			}
+			break;
+		default:
+			mvwaddch(bufwin, n, xpos, c);
+			xpos++;
+			break;
+		}
+	}
 }
 
 void mpaintstat() {
@@ -337,7 +418,7 @@ void mpaintstat() {
 	/* Buffer name, buffer length */
 	if (use_colors) wattron(statuswin, COLOR_PAIR(PAIR_STATUS_BAR));
 
-	nlines = mnumlines(buflist);
+	nlines = mnumlines(curbuf);
 	if (curbuf && curbuf->path) bufname = curbuf->path;
 	wprintw(statuswin, "%s, %i lines", bufname, nlines);
 
@@ -362,12 +443,13 @@ void mpaintbuf(Buffer *buf) {
 	ln = buf->lines;
 
 	for (i = l = 0; l < row && ln->next; ++i, ln = ln->next) {
+		/* TODO: Use curline to speed up painting large files */
 		if (i < curbuf->cursor.starty) continue;
 		if (use_colors) wattron(bufwin, COLOR_PAIR(PAIR_LINE_NUMBERS));
 		if (line_numbers) wprintw(bufwin, "%d\n", i);
 		if (use_colors) wattroff(bufwin, COLOR_PAIR(PAIR_LINE_NUMBERS));
 		if (buf->formatln) {
-			buf->formatln(buf, ln->data, buf->linexoff);
+			//buf->formatln(buf, ln->data, buf->linexoff, l);
 		} else {
 			/* Default line formatting */
 			int i, j, xpos = buf->linexoff, len = strlen(ln->data);
@@ -394,10 +476,24 @@ void mpaintbuf(Buffer *buf) {
 }
 
 void mpaintcmd() {
+	int bufsize;
+	int row, col;
+	char textbuf[32];
+
+	getmaxyx(cmdwin, row, col);
+
 	if (use_colors) wattron(cmdwin, COLOR_PAIR(PAIR_STATUS_HIGHLIGHT));
+
+	/* Command */
 	wprintw(cmdwin, "$");
 	wprintw(cmdwin, " %s", cmdbuf->data);
+
+	/* Repetition count */
+	bufsize = snprintf(textbuf, sizeof(textbuf), "%d", repcnt);
+	mvwprintw(cmdwin, 0, col - bufsize, "%s", textbuf);
+
 	if (use_colors) wattroff(cmdwin, COLOR_PAIR(PAIR_STATUS_HIGHLIGHT));
+
 	wrefresh(cmdwin);
 }
 
@@ -430,6 +526,10 @@ void setmode(Action *ac) {
 	mode = (Mode)ac->arg.i;
 }
 
+void command(Action *ac) {
+	if (ac->arg.v) mruncmd((char*)ac->arg.v);
+}
+
 void motion(Action *ac) {
 	int row, col;
 	getmaxyx(bufwin, row, col);
@@ -458,6 +558,15 @@ void motion(Action *ac) {
 			/* Scroll the view down */
 			curbuf->cursor.starty++;
 		}
+	}
+}
+
+void bufsel(Action *ac) {
+	/* TODO: Forward/backward multiple buffers */
+	if (ac->arg.i < 0) {
+		if (curbuf->prev) curbuf = curbuf->prev;
+	} else if (ac->arg.i > 0) {
+		if (curbuf->next) curbuf = curbuf->next;
 	}
 }
 

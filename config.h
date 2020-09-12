@@ -1,5 +1,6 @@
 #define ESC 27
 #define DEL 127
+#define LF '\n'
 #define COLOR_BG -1
 
 enum ColorPair {
@@ -19,24 +20,22 @@ const short color_pairs[NUM_COLOR_PAIRS][2] = {
 
 const char manual_path[] = "readme.txt";
 
-/*
- * See mett.c for function declarations.
- * Because of how we abstract arguments, you may have to
- * create wrappers for functions which take any parameters
- * other than Action*.
- */
+/* See mett.c for function declarations */
 const Action buffer_actions[] = {
 	/* Command     Shortcut      Function    Argument(s) */
 	{  "left",     'h',          motion,     { .x = -1 } },
 	{  "down",     'j',          motion,     { .y = +1 } },
 	{  "up",       'k',          motion,     { .y = -1 } },
 	{  "right",    'l',          motion,     { .x = +1 } },
+	{  "nextb",    'x',          bufsel,     { .i = +1 } },
+	{  "prevb",    'y',          bufsel,     { .i = -1 } },
 	{  NULL,       ESC,          setmode,    { .i = MODE_NORMAL } },
 	{  NULL,       'i',          setmode,    { .i = MODE_WRITE } },
 	{  NULL,       'c',          setmode,    { .i = MODE_COMMAND } },
-	{  "save",     's',          save,       { .v = NULL } },
-	{  "bs",       'y',          insert,     { .i = KEY_BACKSPACE } },
-	{  "del",      'x',          insert,     { .i = DEL } },
+	{  "write",    'w',          save,       { .v = NULL } },
+	{  "bs",       'a',          insert,     { .i = KEY_BACKSPACE } },
+	{  "del",      's',          insert,     { .i = DEL } },
+	{  "ret",      'n',          insert,     { .i = '\n' } },
 	{  "manual",   '?',          readfile,   { .v = (void*)manual_path } },
 	{  "help",     '?',          readfile,   { .v = (void*)manual_path } },
 	{  "quit",     'q',          quit,       {{ 0 }} },
@@ -65,3 +64,9 @@ const char *backup_path = "/tmp/.mett-backup";
 
 const int cmd_history_size = 16;
 const int max_cmd_repetition = 65536;
+
+/* Filetype-formatting hooks */
+const Formatter formatters[] = {
+	/* Filename */
+	{ "*.c", mformat_c },
+};
