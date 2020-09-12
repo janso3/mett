@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <curses.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -57,6 +58,7 @@ static int mnumlines(Buffer*);
 
 static void mupdatecursor();
 static void minsert(int);
+static void mrepeat(Action*, int);
 static void mruncmd(char*);
 
 static void mformat_c(Buffer*, char*, int);
@@ -79,6 +81,7 @@ static Mode mode = MODE_NORMAL;
 static WINDOW *bufwin, *statuswin, *cmdwin;
 static Buffer *buflist = NULL, *curbuf = NULL;
 static Line *cmdbuf;
+static int repnum = 0;
 
 /* We make all the declarations available to the user */
 #include "config.h"
@@ -118,9 +121,17 @@ int main(int argc, char **argv) {
 		if ((key = wgetch(stdscr)) != ERR) {
 			switch (mode) {
 			case MODE_NORMAL:
-				for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
-					if (buflist && key == buffer_actions[i].key)
-						buffer_actions[i].fn(&buffer_actions[i]);
+				/* Number keys are reserved for repetition */
+				if (isdigit(key)) {
+					repnum = 10 * repnum + (key - '0');
+				} else {
+					for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
+						if (buflist && key == buffer_actions[i].key) {
+							mrepeat((Action*)&buffer_actions[i], repnum ? repnum : 1);
+							repnum = 0;
+							break;
+						}
+					}
 				}
 				break;
 			case MODE_WRITE:
@@ -267,7 +278,9 @@ void minsert(int key) {
 			memcpy(ln->data+idx, ln->data+idx+1, len);
 			break;
 		case '\n':
-			break;
+			{
+				/* TODO: Insert empty line */
+			} break;
 		default:
 			memcpy(ln->data+idx+1, ln->data+idx, len);
 			ln->data[idx] = key;
@@ -277,12 +290,20 @@ void minsert(int key) {
 	}
 }
 
+void mrepeat(Action *ac, int n) {
+	int i;
+	n = MIN(n, max_cmd_repetition);
+	for (i = 0; i < n; i++) {
+		ac->fn(ac);
+	}
+}
+
 void mruncmd(char *buf) {
 	int i;
 	for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
 		char *cmd;
 		long cnt;
-		if (!(cnt = MIN(strtol(buf, &cmd, 10), max_cmd_repetition))) cnt = 1;
+		if (!(cnt = strtol(buf, &cmd, 10))) cnt = 1;
 		if (buffer_actions[i].cmd) {
 			/* Check for valid command */
 			if (/* Either the single-char keyboard shortcut... */
@@ -290,7 +311,7 @@ void mruncmd(char *buf) {
 					/* ...or the full command */
 					|| !strncmp(buffer_actions[i].cmd, cmd, 80)) {
 				long j;
-				for (j = 0; j < cnt; ++j) buffer_actions[i].fn(&buffer_actions[i]);
+				mrepeat((Action*)&buffer_actions[i], cnt);
 			}
 		}
 	}
