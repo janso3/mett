@@ -14,7 +14,7 @@
 
 typedef enum {
 	MODE_NORMAL,
-	MODE_WRITE,
+	MODE_INSERT,
 	MODE_SELECT,
 	MODE_COMMAND
 } Mode;
@@ -89,8 +89,12 @@ static void readfile(Action*);
 
 static void command(Action*);
 static void motion(Action*);
+static void pgup(Action*);
+static void pgdown(Action*);
 static void bufsel(Action*);
 static void insert(Action*);
+static void deleteline(Action*);
+static void newline(Action*);
 
 /* Global variables */
 static Mode mode = MODE_NORMAL;
@@ -112,6 +116,10 @@ int main(int argc, char **argv) {
 	signal(SIGINT, msighandler);
 	for (i = 1; i < argc; ++i) {
 		mreadbuf((curbuf = mnewbuf()), argv[i]);
+	}
+
+	if (!curbuf) {
+		curbuf = mnewbuf();
 	}
 
 	initscr();
@@ -148,8 +156,12 @@ int main(int argc, char **argv) {
 					repcnt = MIN(10 * repcnt + (key - '0'), max_cmd_repetition);
 				} else {
 					for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
-						if (buflist && key == buffer_actions[i].key)
-							mrepeat((Action*)&buffer_actions[i], repcnt ? repcnt : 1);
+						if (key == buffer_actions[i].key) {
+							/* Create non-const copy, since commands may modify actions */
+							Action ac;
+							memcpy(&ac, &buffer_actions[i], sizeof(Action));
+							mrepeat(&ac, repcnt ? repcnt : 1);
+						}
 					}
 					repcnt = 0;
 				}
@@ -157,7 +169,7 @@ int main(int argc, char **argv) {
 			case MODE_SELECT:
 				if (key == ESC) mode = MODE_NORMAL;
 				break;
-			case MODE_WRITE:
+			case MODE_INSERT:
 				if (key == ESC) mode = MODE_NORMAL;
 				else minsert(curbuf, key);
 				break;
@@ -254,7 +266,7 @@ void mupdatecursor() {
 		int row, col;
 		getmaxyx(stdscr, row, col);
 		size_t len = wcslen(cmdbuf->curline->data);
-		move(row-1, len+2);
+		move(row-1, len);
 	} else {
 		Line *ln;
 		int i, ntabs;
@@ -272,48 +284,41 @@ void mupdatecursor() {
 }
 
 void minsert(Buffer *buf, int key) {
-	static int inseq = 0; /* Are we inside a unicode sequence? */
 	int i, idx, len;
 	wchar_t wc;
 	Line *ln;
 
 	if (!buf || !(ln = buf->curline)) return;
 
-	/* Insert into unicode buffer */
-	if (inseq && (i = strlen(unibuf)) < 3) {
-		unibuf[i] = key;
-		unibuf[i+1] = 0;
-		return;
-	} else if (!(isalpha(key) || isdigit(key))) {
-		inseq = 1;
-	} else {
-		/* ASCII-char */
-		wc = key;
-	}
+	wc = key;
 
 	idx = buf->cursor.c.x;
 	len = wcslen(ln->data)+1;
 
-	switch (key) {
+	switch (wc) {
 	case KEY_BACKSPACE:
 		if (idx) {
 			memcpy(ln->data+idx-1, ln->data+idx, len * sizeof(wchar_t));
 			buf->cursor.c.x--;
 		}
 		break;
-	case DEL:
+	case KEY_DC:
 		memcpy(ln->data+idx, ln->data+idx+1, len * sizeof(wchar_t));
 		break;
 	case '\n':
 		{
-			Line *old = ln;
-			Action ac = { .arg.y = 1 };
-		 	ln = curbuf->curline = (Line*)calloc(1, sizeof(Line)+default_linebuf_size);
-			ln->data[0] = L'\n';
-			ln->next = old->next;
-			ln->prev = old;
-			old->next = ln;
-			motion(&ac);
+			if (mode == MODE_COMMAND) {
+				mruncmd(cmdbuf->curline->data);
+			} else {
+				Line *old = ln;
+				Action ac = { .arg.y = 1 };
+		 		ln = buf->curline = (Line*)calloc(1, sizeof(Line)+default_linebuf_size);
+				ln->data[0] = L'\n';
+				ln->next = old->next;
+				ln->prev = old;
+				old->next = ln;
+				motion(&ac);
+			}
 		}
 		break;
 	default:
@@ -406,8 +411,8 @@ void mpaintstat() {
 	Buffer *cur = buflist;
 	int row, col, nlines, bufsize;
 	char textbuf[32];
-	char *bufname = "Untitled";
-	const char *modes[] = { "NORMAL", "WRITE", "SELECT", "COMMAND" };
+	char *bufname = "~scratch~";
+	const char *modes[] = { "NORMAL", "INSERT", "SELECT", "COMMAND" };
 
 	getmaxyx(stdscr, row, col);
 	if (use_colors) wattron(statuswin, COLOR_PAIR(PAIR_STATUS_BAR));
@@ -540,58 +545,6 @@ void setmode(Action *ac) {
 	}
 }
 
-void command(Action *ac) {
-	if (ac->arg.v) mruncmd((wchar_t*)ac->arg.v);
-}
-
-void motion(Action *ac) {
-	int row, col, len;
-	getmaxyx(bufwin, row, col);
-
-	/* left / right */
-	if (ac->arg.x == -1) {
-		curbuf->cursor.c.x = MAX(curbuf->cursor.c.x-1, 0);
-	} else if (ac->arg.x == +1) {
-		curbuf->cursor.c.x = MIN(curbuf->cursor.c.x+1, col-curbuf->linexoff-1);
-	}
-
-	/* up / down */
-	if (ac->arg.y == -1 && curbuf->cursor.c.y) {
-		if (curbuf->cursor.c.y <= curbuf->cursor.starty) {
-			/* Scroll the view up */
-			curbuf->cursor.starty--;
-		}
-		curbuf->cursor.c.y--;
-		if (curbuf->curline->prev) curbuf->curline = curbuf->curline->prev;
-	} else if (ac->arg.y == +1) {
-		if (curbuf->curline->next) {
-			curbuf->curline = curbuf->curline->next;
-			curbuf->cursor.c.y++;
-		}
-		if (curbuf->cursor.c.y - curbuf->cursor.starty >= row) {
-			/* Scroll the view down */
-			curbuf->cursor.starty++;
-		}
-	}
-
-	/* Restrict cursor to line content */
-	len = wcslen(curbuf->curline->data)-1;
-	curbuf->cursor.c.x = MAX(MIN(curbuf->cursor.c.x, len), 0);
-}
-
-void bufsel(Action *ac) {
-	/* TODO: Forward/backward multiple buffers */
-	if (ac->arg.i < 0) {
-		if (curbuf->prev) curbuf = curbuf->prev;
-	} else if (ac->arg.i > 0) {
-		if (curbuf->next) curbuf = curbuf->next;
-	}
-}
-
-void insert(Action *ac) {
-	minsert(curbuf, ac->arg.i);
-}
-
 void save(Action *ac) {
 	FILE *src, *bak;
 	Line *ln;
@@ -622,4 +575,97 @@ void save(Action *ac) {
 
 void readfile(Action *ac) {
 	if (ac->arg.v) mreadbuf((curbuf = mnewbuf()), ac->arg.v);
+}
+
+void command(Action *ac) {
+	if (ac->arg.v) mruncmd((wchar_t*)ac->arg.v);
+}
+
+void motion(Action *ac) {
+	int i, len;
+	int row, col;
+	getmaxyx(bufwin, row, col);
+
+	/* left / right */
+	if (ac->arg.x == -1) {
+		curbuf->cursor.c.x = MAX(curbuf->cursor.c.x-1, 0);
+	} else if (ac->arg.x == +1) {
+		curbuf->cursor.c.x = MIN(curbuf->cursor.c.x+1, col-curbuf->linexoff-1);
+	} else {
+		curbuf->cursor.c.x = ac->arg.x;
+	}
+
+	/* up / down */
+	if (ac->arg.y < 0) {
+		for (i = 0; i < ABS(ac->arg.y); ++i) {
+			if (curbuf->curline->prev) {
+				curbuf->curline = curbuf->curline->prev;
+				curbuf->cursor.c.y--;
+			}
+			if (curbuf->cursor.c.y < curbuf->cursor.starty) {
+				/* Scroll the view up */
+				curbuf->cursor.starty--;
+			}
+		}
+	} else {
+		for (i = 0; i < ac->arg.y; ++i) {
+			if (curbuf->curline->next) {
+				curbuf->curline = curbuf->curline->next;
+				curbuf->cursor.c.y++;
+			}
+			if (curbuf->cursor.c.y - curbuf->cursor.starty >= row) {
+				/* Scroll the view down */
+				curbuf->cursor.starty++;
+			}
+		}
+	}
+
+	/* Restrict cursor to line content */
+	len = wcslen(curbuf->curline->data)-1;
+	curbuf->cursor.c.x = MAX(MIN(curbuf->cursor.c.x, len), 0);
+}
+
+void pgup(Action *ac) {
+	int row, col;
+	getmaxyx(bufwin, row, col);
+	ac->arg.y = -row;
+	curbuf->cursor.starty -= row;
+	motion(ac);
+}
+
+void pgdown(Action *ac) {
+	int row, col;
+	getmaxyx(bufwin, row, col);
+	ac->arg.y = +row;
+	curbuf->cursor.starty += row;
+	motion(ac);
+}
+
+void bufsel(Action *ac) {
+	/* TODO: Forward/backward multiple buffers */
+	if (ac->arg.i < 0) {
+		if (curbuf->prev) curbuf = curbuf->prev;
+	} else if (ac->arg.i > 0) {
+		if (curbuf->next) curbuf = curbuf->next;
+	}
+}
+
+void insert(Action *ac) {
+	minsert(curbuf, ac->arg.i);
+}
+
+void deleteline(Action *ac) {
+	Line *ln = curbuf->curline;
+	if (!ln) return;
+	if (ln->prev)
+		ln->prev->next = ln->next;
+	if (ln->next)
+		ln->next->prev = ln->prev;
+	curbuf->curline = ln->prev;
+	free(ln);
+}
+
+void newline(Action *ac) {
+	minsert(curbuf, L'\n');
+	mode = MODE_INSERT;
 }
