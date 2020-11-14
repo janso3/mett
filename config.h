@@ -1,5 +1,4 @@
 #define ESC 27
-#define DEL 127
 #define LF '\n'
 #define COLOR_BG -1
 
@@ -22,26 +21,48 @@ const char manual_path[] = "readme.txt";
 
 /* See mett.c for function declarations */
 const Action buffer_actions[] = {
-	/* Command      Shortcut      Function    Argument(s) */
-	{  L"left",     L'h',         motion,     { .x = -1 } },
-	{  L"down",     L'j',         motion,     { .y = +1 } },
-	{  L"up",       L'k',         motion,     { .y = -1 } },
-	{  L"right",    L'l',         motion,     { .x = +1 } },
-	{  L"nextb",    L'x',         bufsel,     { .i = +1 } },
-	{  L"prevb",    L'y',         bufsel,     { .i = -1 } },
-	{  NULL,       	ESC,          setmode,    { .i = MODE_NORMAL } },
-	{  NULL,       	L'i',         setmode,    { .i = MODE_WRITE } },
-	{  NULL,       	L':',         setmode,    { .i = MODE_COMMAND } },
-	{  NULL,       	L'v',         setmode,    { .i = MODE_SELECT } },
-	{  L"write",    L'w',         save,       { .v = NULL } },
-	{  L"bs",       L'a',         insert,     { .i = KEY_BACKSPACE } },
-	{  L"del",      L's',         insert,     { .i = DEL } },
-	{  L"ret",      L'n',         insert,     { .i = '\n' } },
-	{  L"manual",   L'?',         readfile,   { .v = (void*)manual_path } },
-	{  L"help",     L'?',         readfile,   { .v = (void*)manual_path } },
-	{  L"quit",     L'q',         quit,       {{ 0 }} },
-	{  L"exit",     L'q',         quit,       {{ 0 }} },
-	{  L"repaint",  KEY_RESIZE,   repaint,    {{ 0 }} },
+	/* Command      Shortcut       Function    Argument(s) */
+
+	/* Movement */
+	{  L"left",     L'h',          motion,     { .x = -1 } },
+	{  L"down",     L'j',          motion,     { .y = +1 } },
+	{  L"up",       L'k',          motion,     { .y = -1 } },
+	{  L"right",    L'l',          motion,     { .x = +1 } },
+	{  NULL,        KEY_BACKSPACE, motion,     { .x = -1 } },
+	{  NULL,        L'\n',         motion,     { .y = +1 } },
+	{  NULL,        L' ',          motion,     { .x = +1 } },
+	{  L"home",     KEY_HOME,      motion,     { .x = 0 } },
+	{  L"end",      KEY_END,       motion,     { .x = +65535 } },
+	{  L"pgup",     KEY_PPAGE,     pgup,       {{ 0 }} },
+	{  L"pgdown",   KEY_NPAGE,     pgdown,     {{ 0 }} },
+
+	/* Buffer management */
+	{  L"nextb",    L'n',          bufsel,     { .i = +1 } },
+	{  L"prevb",    L'p',          bufsel,     { .i = -1 } },
+
+	/* Mode switching */
+	{  NULL,        ESC,           setmode,    { .i = MODE_NORMAL } },
+	{  NULL,        L'i',          setmode,    { .i = MODE_INSERT } },
+	{  NULL,        L'v',          setmode,    { .i = MODE_SELECT } },
+	{  NULL,        L':',          setmode,    { .i = MODE_COMMAND } },
+	{  NULL,        KEY_IC,        setmode,    { .i = MODE_INSERT } },
+
+	/* File I/O */
+	{  L"write",    0,             save,       { .v = NULL } },
+	{  L"manual",   L'?',          readfile,   { .v = (void*)manual_path } },
+	{  L"help",     L'?',          readfile,   { .v = (void*)manual_path } },
+
+	/* Buffer modification */
+	{  L"bs",       L'a',          insert,     { .i = KEY_BACKSPACE } },
+	{  L"del",      L'x',          insert,     { .i = KEY_DC } },
+	{  L"delln",    L'z',          deleteline, {{ 0 }} },
+	{  NULL,        KEY_DC,        insert,     { .i = KEY_DC } },
+	{  NULL,        L'o',          newline,    {{ 0 }} },
+
+	/* Misc */
+	{  L"quit",     L'q',          quit,       {{ 0 }} },
+	{  L"exit",     L'q',          quit,       {{ 0 }} },
+	{  L"repaint",  KEY_RESIZE,    repaint,    {{ 0 }} },
 };
 
 static bool use_colors = TRUE;
