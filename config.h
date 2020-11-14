@@ -14,7 +14,7 @@ const short color_pairs[NUM_COLOR_PAIRS][2] = {
 	/* Foreground       Background */
 	{  0,               0 },
 	{  COLOR_YELLOW,    COLOR_BG },
-	{  COLOR_GREEN,     COLOR_BLACK },
+	{  COLOR_GREEN,     COLOR_BG },
 	{  COLOR_YELLOW,    COLOR_BG },
 };
 
@@ -22,36 +22,30 @@ const char manual_path[] = "readme.txt";
 
 /* See mett.c for function declarations */
 const Action buffer_actions[] = {
-	/* Command     Shortcut      Function    Argument(s) */
-	{  "left",     'h',          motion,     { .x = -1 } },
-	{  "down",     'j',          motion,     { .y = +1 } },
-	{  "up",       'k',          motion,     { .y = -1 } },
-	{  "right",    'l',          motion,     { .x = +1 } },
-	{  "nextb",    'x',          bufsel,     { .i = +1 } },
-	{  "prevb",    'y',          bufsel,     { .i = -1 } },
-	{  NULL,       ESC,          setmode,    { .i = MODE_NORMAL } },
-	{  NULL,       'i',          setmode,    { .i = MODE_WRITE } },
-	{  NULL,       'c',          setmode,    { .i = MODE_COMMAND } },
-	{  "write",    'w',          save,       { .v = NULL } },
-	{  "bs",       'a',          insert,     { .i = KEY_BACKSPACE } },
-	{  "del",      's',          insert,     { .i = DEL } },
-	{  "ret",      'n',          insert,     { .i = '\n' } },
-	{  "manual",   '?',          readfile,   { .v = (void*)manual_path } },
-	{  "help",     '?',          readfile,   { .v = (void*)manual_path } },
-	{  "quit",     'q',          quit,       {{ 0 }} },
-	{  "exit",     'q',          quit,       {{ 0 }} },
-	{  "repaint",  KEY_RESIZE,   repaint,    {{ 0 }} },
+	/* Command      Shortcut      Function    Argument(s) */
+	{  L"left",     L'h',         motion,     { .x = -1 } },
+	{  L"down",     L'j',         motion,     { .y = +1 } },
+	{  L"up",       L'k',         motion,     { .y = -1 } },
+	{  L"right",    L'l',         motion,     { .x = +1 } },
+	{  L"nextb",    L'x',         bufsel,     { .i = +1 } },
+	{  L"prevb",    L'y',         bufsel,     { .i = -1 } },
+	{  NULL,       	ESC,          setmode,    { .i = MODE_NORMAL } },
+	{  NULL,       	L'i',         setmode,    { .i = MODE_WRITE } },
+	{  NULL,       	L'c',         setmode,    { .i = MODE_COMMAND } },
+	{  NULL,       	L'v',         setmode,    { .i = MODE_SELECT } },
+	{  L"write",    L'w',         save,       { .v = NULL } },
+	{  L"bs",       L'a',         insert,     { .i = KEY_BACKSPACE } },
+	{  L"del",      L's',         insert,     { .i = DEL } },
+	{  L"ret",      L'n',         insert,     { .i = '\n' } },
+	{  L"manual",   L'?',         readfile,   { .v = (void*)manual_path } },
+	{  L"help",     L'?',         readfile,   { .v = (void*)manual_path } },
+	{  L"quit",     L'q',         quit,       {{ 0 }} },
+	{  L"exit",     L'q',         quit,       {{ 0 }} },
+	{  L"repaint",  KEY_RESIZE,   repaint,    {{ 0 }} },
 };
 
 static bool use_colors = TRUE;
 static bool line_numbers = TRUE;
-
-/*
- * When disabled, the cursor will stop at
- * the end of the line content. Otherwise,
- * you can move it freely about the buffer.
- */
-static bool floating_cursor = TRUE;
 
 /* Maximum line size in bytes until reallocation */
 const unsigned default_linebuf_size = 256;
