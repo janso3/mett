@@ -66,7 +66,6 @@ static void msighandler(int);
 static int mnumplaces(int);
 
 static Buffer* mnewbuf();
-static void mclearbuf(Buffer*);
 static void mfreebuf(Buffer*);
 static int mreadbuf(Buffer*, const char*);
 static int mnumlines(Buffer*);
@@ -109,7 +108,7 @@ int main(int argc, char **argv) {
 
 	setlocale(LC_ALL, "");
 
-	mclearbuf((cmdbuf = mnewbuf()));
+	cmdbuf = mnewbuf();
 	signal(SIGINT, msighandler);
 	for (i = 1; i < argc; ++i) {
 		mreadbuf((curbuf = mnewbuf()), argv[i]);
@@ -119,7 +118,7 @@ int main(int argc, char **argv) {
 	clear();
 	noecho();
 	keypad(stdscr, TRUE);
-	nodelay(stdscr, TRUE);
+	nodelay(stdscr, FALSE);
 	notimeout(stdscr, TRUE);
 	use_default_colors();
 
@@ -188,8 +187,8 @@ int mnumplaces(int n) {
 	/* How many decimal places in a number? */
 	int r = n < 0 ? 2 : 1;
 	while (n > 9) {
-	    n /= 10;
-	    r++;
+		n /= 10;
+		r++;
 	}
 	return r;
 }
@@ -200,15 +199,11 @@ Buffer* mnewbuf() {
 	if (buflist) next = buflist;
 	if (!(buflist = (Buffer*)calloc(1, sizeof(Buffer)))) return NULL;
 	buflist->next = next;
+	/* Every buffer has at least one line */
+	buflist->curline = buflist->lines = (Line*)calloc(sizeof(Line)+default_linebuf_size*sizeof(wchar_t), 1);
+	buflist->curline->length = default_linebuf_size;
 	if (next) buflist->next->prev = buflist;
 	return buflist;
-}
-
-void mclearbuf(Buffer *buf) {
-	/* Clear the contents of buf */
-	if (buf->lines) free(buf->lines);
-	buf->curline = buf->lines = (Line*)calloc(sizeof(Line)+default_linebuf_size*sizeof(wchar_t), 1);
-	buf->curline->length = default_linebuf_size;
 }
 
 void mfreebuf(Buffer *buf) {
@@ -219,15 +214,13 @@ int mreadbuf(Buffer *buf, const char *path) {
 	FILE *fp;
 	const size_t len = default_linebuf_size;
 	wchar_t linecnt[len];
-	int nlines;
 	Line *ln;
 
-	mclearbuf(buf);
 	ln = buf->lines;
 	if (!(fp = fopen(path, "r"))) return 0;
 	while (fgetws(linecnt, len, fp) == linecnt) {
 		Line *curln = ln;
-		wcsncpy(ln->data, linecnt, len-1);
+		wcsncpy(ln->data, linecnt, len);
 		ln->data[len-1] = 0;
 		ln->next = (Line*)calloc(sizeof(Line)+len*sizeof(wchar_t), 1);
 		ln->length = default_linebuf_size;
@@ -235,10 +228,8 @@ int mreadbuf(Buffer *buf, const char *path) {
 		ln->prev = curln;
 	}
 
-	nlines = mnumlines(buf);
-	buf->linexoff = line_numbers ? mnumplaces(nlines)+1 : 0;
+	buf->linexoff = 4; // TODO
 	buf->path = (char*)calloc(1, strlen(path)+1);
-	//buf->formatln = mformat_c;
 	strcpy(buf->path, path);
 	fclose(fp);
 
@@ -442,51 +433,56 @@ void mpaintstat() {
 	if (use_colors) wattroff(statuswin, COLOR_PAIR(PAIR_STATUS_BAR));
 }
 
+void mpaintln(Buffer *buf, Line *ln, WINDOW *win, int y, int n, bool numbers) {
+	int i, j;
+	if (use_colors) wattron(win, COLOR_PAIR(PAIR_LINE_NUMBERS));
+	if (numbers && line_numbers) mvwprintw(win, y, 0, "%d", n);
+	if (use_colors) wattroff(win, COLOR_PAIR(PAIR_LINE_NUMBERS));
+	if (buf->formatln) {
+		//buf->formatln(buf, ln->data, buf->linexoff, l);
+	} else {
+		/* Default line formatting */
+		int x = buf->linexoff, len = wcslen(ln->data);
+		for (i = 0; i < len; ++i) {
+			const wchar_t c = ln->data[i];
+			switch (c) {
+			case L'\t':
+			{
+				for (j = 0; j < tab_width; ++j) {
+					cchar_t cc;
+					setcchar(&cc, &c, 0, 0, 0);
+					mvwadd_wch(win, y, x, &cc);
+					x++;
+				}
+			} break;
+			default:
+			{
+				cchar_t cc;
+				setcchar(&cc, &c, 0, 0, 0);
+				mvwadd_wch(win, y, x, &cc);
+				x++;
+			} break;
+			}
+		}
+	}
+}
+
 void mpaintbuf(Buffer *buf, WINDOW *win, bool numbers) {
-	int i, l;
+	int i, l, cp;
 	int row, col;
 	Line *ln;
 
 	if (!buf || !bufwin) return;
 	getmaxyx(win, row, col);
-	ln = buf->lines;
+	cp = buf->cursor.c.y - buf->cursor.starty;
 
-	for (i = l = 0; l < row && ln; ++i, ln = ln->next) {
-		/* TODO: Use curline to speed up painting large files */
-		if (i < curbuf->cursor.starty) continue;
-		if (use_colors) wattron(win, COLOR_PAIR(PAIR_LINE_NUMBERS));
-		if (numbers && line_numbers) wprintw(win, "%d\n", i);
-		if (use_colors) wattroff(win, COLOR_PAIR(PAIR_LINE_NUMBERS));
-		if (buf->formatln) {
-			//buf->formatln(buf, ln->data, buf->linexoff, l);
-		} else {
-			/* Default line formatting */
-			int i, j, xpos = buf->linexoff, len = wcslen(ln->data);
-			for (i = 0; i < len; ++i) {
-				const wchar_t c = ln->data[i];
-				switch (c) {
-				case L'\t':
-				{
-					for (j = 0; j < tab_width; ++j) {
-						cchar_t cc;
-						setcchar(&cc, &c, 0, 0, 0);
-						mvwadd_wch(win, l, xpos, &cc);
-						xpos++;
-					}
+	/* Paint from the cursor to the bottom */
+	for (i = cp, l = 0, ln = buf->curline; i < row && ln; ++i, ++l, ln = ln->next)
+		mpaintln(buf, ln, win, i, l, numbers);
 
-				} break;
-				default:
-				{
-					cchar_t cc;
-					setcchar(&cc, &c, 0, 0, 0);
-					mvwadd_wch(win, l, xpos, &cc);
-					xpos++;
-				} break;
-				}
-			}
-		}
-		l++;
-	}
+	/* Paint from the cursor to the top */
+	for (i = cp, l = 0, ln = buf->curline; i>=0 && ln; --i, ++l, ln = ln->prev)
+		mpaintln(buf, ln, win, i, l, numbers);
 
 	wrefresh(win);
 }
