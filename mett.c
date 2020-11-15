@@ -8,10 +8,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MIN(a,b) ((a)<(b)?(a):(b))
-#define MAX(a,b) ((a)>(b)?(a):(b))
-#define ABS(a)   ((a)<0?-(a):a)
-
 typedef enum {
 	MODE_NORMAL,
 	MODE_INSERT,
@@ -62,6 +58,9 @@ typedef struct formatter_ {
 } Formatter;
 
 /* Internal functions */
+static int32_t min(int32_t, int32_t);
+static int32_t max(int32_t, int32_t);
+
 static void msighandler(int);
 static int mnumplaces(int);
 
@@ -83,6 +82,7 @@ static void mpaintcmd();
 
 /* Bindable functions */
 static void repaint();
+static void handlemouse();
 static void quit();
 static void setmode(const Action*);
 static void save(const Action*);
@@ -112,6 +112,7 @@ int main(int argc, char **argv) {
 
 	setlocale(LC_ALL, "");
 
+	/* Init buffers */
 	cmdbuf = mnewbuf();
 	signal(SIGINT, msighandler);
 	for (i = 1; i < argc; ++i) {
@@ -122,6 +123,7 @@ int main(int argc, char **argv) {
 		curbuf = mnewbuf();
 	}
 
+	/* Init curses */
 	initscr();
 	clear();
 	noecho();
@@ -129,6 +131,7 @@ int main(int argc, char **argv) {
 	nodelay(stdscr, FALSE);
 	notimeout(stdscr, TRUE);
 	use_default_colors();
+	mousemask(BUTTON1_CLICKED | REPORT_MOUSE_POSITION, NULL);
 
 	if ((use_colors = has_colors())) {
 		start_color();
@@ -148,7 +151,7 @@ int main(int argc, char **argv) {
 
 				/* Number keys are reserved for repetition */
 				if (isdigit(key)) {
-					repcnt = MIN(10 * repcnt + (key - '0'), max_cmd_repetition);
+					repcnt = min(10 * repcnt + (key - '0'), max_cmd_repetition);
 				} else {
 					for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
 						if (key == buffer_actions[i].key)
@@ -174,6 +177,14 @@ int main(int argc, char **argv) {
 	}
 
 	return 0;
+}
+
+int32_t min(int32_t a, int32_t b) {
+	return a < b ? a : b;
+}
+
+int32_t max(int32_t a, int32_t b) {
+	return a > b ? a : b;
 }
 
 void msighandler(int signum) {
@@ -329,16 +340,16 @@ void mmove(Buffer *buf, int x, int y) {
 
 	/* left / right */
 	if (x == -1) {
-		buf->cursor.c.x = MAX(buf->cursor.c.x-1, 0);
+		buf->cursor.c.x = max(buf->cursor.c.x-1, 0);
 	} else if (x == +1) {
-		buf->cursor.c.x = MIN(buf->cursor.c.x+1, col-buf->linexoff-1);
+		buf->cursor.c.x = min(buf->cursor.c.x+1, col-buf->linexoff-1);
 	} else {
 		buf->cursor.c.x = x;
 	}
 
 	/* up / down */
 	if (y < 0) {
-		for (i = 0; i < ABS(y); ++i) {
+		for (i = 0; i < abs(y); ++i) {
 			if (buf->curline->prev) {
 				buf->curline = buf->curline->prev;
 				buf->cursor.c.y--;
@@ -363,12 +374,12 @@ void mmove(Buffer *buf, int x, int y) {
 
 	/* Restrict cursor to line content */
 	len = wcslen(buf->curline->data)-1;
-	buf->cursor.c.x = MAX(MIN(buf->cursor.c.x, len), 0);
+	buf->cursor.c.x = max(min(buf->cursor.c.x, len), 0);
 }
 
 void mrepeat(const Action *ac, int n) {
 	int i;
-	n = MIN(n, max_cmd_repetition);
+	n = min(n, max_cmd_repetition);
 	for (i = 0; i < n; ++i) {
 		ac->fn(ac);
 	}
@@ -562,6 +573,20 @@ void repaint() {
 	mpaintstat();
 	mpaintcmd();
 	mupdatecursor();
+}
+
+void handlemouse() {
+	MEVENT ev;
+	if (getmouse(&ev) == OK) {
+		if (ev.bstate & BUTTON1_CLICKED) {
+			/* Jump to mouse location */
+			int x = ev.x, y = ev.y;
+			wmouse_trafo(bufwin, &y, &x, FALSE);
+			x = x - curbuf->linexoff;
+			y = y - curbuf->cursor.c.y + curbuf->cursor.starty;
+			mmove(curbuf, x, y);
+		}
+	}
 }
 
 void quit() {
