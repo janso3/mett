@@ -1,5 +1,4 @@
 #define ESC 27
-#define LF '\n'
 #define COLOR_BG -1
 
 enum ColorPair {
@@ -35,10 +34,14 @@ const Action buffer_actions[] = {
 	{  L"end",      KEY_END,       motion,      { .y = +(1<<31-1) } },
 	{  L"pgup",     KEY_PPAGE,     pgup,        {{ 0 }} },
 	{  L"pgdown",   KEY_NPAGE,     pgdown,      {{ 0 }} },
+	{  NULL,        L'0',          jump,        { .m = MARKER_START } },
+	{  NULL,        L'&',          jump,        { .m = MARKER_MIDDLE } },
+	{  NULL,        L'$',          jump,        { .m = MARKER_END } },
 
 	/* Buffer management */
 	{  L"nextb",    L'n',          bufsel,      { .i = +1 } },
 	{  L"prevb",    L'p',          bufsel,      { .i = -1 } },
+	{  L"bd",       0,             bufdel,      { .i = 0 } },
 
 	/* Mode switching */
 	{  NULL,        ESC,           setmode,     { .i = MODE_NORMAL } },
@@ -48,16 +51,17 @@ const Action buffer_actions[] = {
 	{  NULL,        KEY_IC,        setmode,     { .i = MODE_INSERT } },
 
 	/* File I/O */
-	{  L"write",    0,             save,        { .v = NULL } },
+	{  L"write",    L'w',          save,        { .v = NULL } },
 	{  L"manual",   L'?',          readfile,    { .v = (void*)manual_path } },
 	{  L"help",     L'?',          readfile,    { .v = (void*)manual_path } },
 
 	/* Buffer modification */
 	{  L"bs",       L'a',          insert,      { .i = KEY_BACKSPACE } },
 	{  L"del",      L'x',          insert,      { .i = KEY_DC } },
-	{  L"delln",    L'z',          deleteline,  {{ 0 }} },
+	{  L"delln",    L'z',          freeln,      {{ 0 }} },
 	{  NULL,        KEY_DC,        insert,      { .i = KEY_DC } },
-	{  NULL,        L'o',          newline,     {{ 0 }} },
+	{  NULL,        L'A',          append,      {{ 0 }} },
+	{  NULL,        L'o',          newln,       {{ 0 }} },
 
 	/* Misc */
 	{  L"quit",     L'q',          quit,        {{ 0 }} },
