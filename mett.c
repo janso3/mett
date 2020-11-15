@@ -15,6 +15,12 @@ typedef enum {
 	MODE_COMMAND
 } Mode;
 
+typedef enum {
+	MARKER_START,
+	MARKER_MIDDLE,
+	MARKER_END
+} Marker;
+
 typedef struct {
 	int x, y;
 } Coord;
@@ -49,6 +55,7 @@ typedef struct {
 		struct { int x, y; };
 		int i;
 		void *v;
+		Marker m;
 	} arg;
 } Action;
 
@@ -67,11 +74,14 @@ static int mnumplaces(int);
 static Buffer* mnewbuf();
 static void mfreebuf(Buffer*);
 static int mreadbuf(Buffer*, const char*);
+static void mclearbuf(Buffer*);
 static int mnumlines(Buffer*);
 
 static void mupdatecursor();
 static void minsert(Buffer*, int);
+static void mfreeln(Line*);
 static void mmove(Buffer*, int, int);
+static void mjump(Buffer*, Marker);
 static void mrepeat(const Action*, int);
 static void mruncmd(wchar_t*);
 
@@ -90,12 +100,15 @@ static void readfile(const Action*);
 
 static void command(const Action*);
 static void motion(const Action*);
+static void jump(const Action*);
 static void pgup();
 static void pgdown();
 static void bufsel(const Action*);
+static void bufdel(const Action*);
 static void insert(const Action*);
-static void deleteline();
-static void newline();
+static void freeln();
+static void append();
+static void newln();
 
 /* Global variables */
 static Mode mode = MODE_NORMAL;
@@ -114,6 +127,7 @@ int main(int argc, char **argv) {
 
 	/* Init buffers */
 	cmdbuf = mnewbuf();
+	cmdbuf->linexoff = 0;
 	signal(SIGINT, msighandler);
 	for (i = 1; i < argc; ++i) {
 		mreadbuf((curbuf = mnewbuf()), argv[i]);
@@ -126,6 +140,7 @@ int main(int argc, char **argv) {
 	/* Init curses */
 	initscr();
 	clear();
+	refresh();
 	noecho();
 	keypad(stdscr, TRUE);
 	nodelay(stdscr, FALSE);
@@ -145,12 +160,12 @@ int main(int argc, char **argv) {
 			switch (mode) {
 			case MODE_NORMAL:
 				/* Special keys will cancel action sequences */
-				if (key == ESC || key == LF) {
+				if (key == ESC || key == '\n') {
 					repcnt = 0;
 				}
 
-				/* Number keys are reserved for repetition */
-				if (isdigit(key)) {
+				/* Number keys (other than 0) are reserved for repetition */
+				if (isdigit(key) && !(key == '0' && !repcnt)) {
 					repcnt = min(10 * repcnt + (key - '0'), max_cmd_repetition);
 				} else {
 					for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
@@ -214,14 +229,22 @@ Buffer* mnewbuf() {
 	if (!(buflist = (Buffer*)calloc(1, sizeof(Buffer)))) return NULL;
 	buflist->next = next;
 	/* Every buffer has at least one line */
-	buflist->curline = buflist->lines = (Line*)calloc(sizeof(Line)+default_linebuf_size*sizeof(wchar_t), 1);
+	buflist->curline = buflist->lines = (Line*)calloc(sizeof(wchar_t), sizeof(Line)+default_linebuf_size);
 	buflist->curline->length = default_linebuf_size;
+	buflist->linexoff = 4; // TODO
 	if (next) buflist->next->prev = buflist;
 	return buflist;
 }
 
 void mfreebuf(Buffer *buf) {
+	Line *ln;
+	if (!buf) return;
 	free(buf->path);
+	//for (ln = buf->lines; ln; ln = ln->next)
+	//	free(ln);
+	if (buf->prev) buf->prev->next = buf->next;
+	if (buf->next) buf->next->prev = buf->prev;
+	if (curbuf == buf) curbuf = buf->next;
 }
 
 int mreadbuf(Buffer *buf, const char *path) {
@@ -236,18 +259,26 @@ int mreadbuf(Buffer *buf, const char *path) {
 		Line *curln = ln;
 		wcsncpy(ln->data, linecnt, len);
 		ln->data[len-1] = 0;
-		ln->next = (Line*)calloc(sizeof(Line)+len*sizeof(wchar_t), 1);
+		ln->next = (Line*)calloc(sizeof(Line)+len, sizeof(wchar_t));
 		ln->length = default_linebuf_size;
 		ln = ln->next;
 		ln->prev = curln;
 	}
 
-	buf->linexoff = 4; // TODO
 	buf->path = (char*)calloc(1, strlen(path)+1);
 	strcpy(buf->path, path);
 	fclose(fp);
 
 	return 1;
+}
+
+void mclearbuf(Buffer *buf) {
+	Line *ln;
+	for (ln = buf->lines->next; ln; ln = ln->next)
+		free(ln);
+	ln = buf->curline = buf->lines;
+	ln->next = NULL;
+	ln->data[0] = 0;
 }
 
 int mnumlines(Buffer *buf) {
@@ -263,7 +294,7 @@ int mnumlines(Buffer *buf) {
 }
 
 void mupdatecursor() {
-	/* Place the cursor in the right place depending on mode */
+	/* Place the cursor depending on the mode */
 	if (mode == MODE_COMMAND) {
 		int row, col;
 		getmaxyx(stdscr, row, col);
@@ -296,40 +327,62 @@ void minsert(Buffer *buf, int key) {
 	wc = key;
 
 	idx = buf->cursor.c.x;
-	len = wcslen(ln->data)+1;
+	len = (wcslen(ln->data)+1) * sizeof(wchar_t);
 
 	switch (wc) {
 	case KEY_BACKSPACE:
 		if (idx) {
-			memcpy(ln->data+idx-1, ln->data+idx, len * sizeof(wchar_t));
+			memcpy(ln->data+idx-1, ln->data+idx, len);
 			buf->cursor.c.x--;
+		} else if (ln->prev) {
+			int plen = wcslen(ln->prev->data);
+			memcpy(ln->prev->data+plen-1, ln->data, len);
+			mmove(buf, plen-1, -1);
+			buf->curline = ln->prev;
+			mfreeln(ln);
 		}
 		break;
 	case KEY_DC:
-		memcpy(ln->data+idx, ln->data+idx+1, len * sizeof(wchar_t));
+		memcpy(ln->data+idx, ln->data+idx+1, len);
 		break;
 	case '\n':
 		{
 			if (mode == MODE_COMMAND) {
 				mruncmd(cmdbuf->curline->data);
+				mclearbuf(cmdbuf);
+				mode = MODE_NORMAL;
 			} else {
+				/* TODO */
 				Line *old = ln;
-		 		ln = buf->curline = (Line*)calloc(1, sizeof(Line)+default_linebuf_size);
-				ln->data[0] = L'\n';
+		 		ln = (Line*)calloc(sizeof(wchar_t), sizeof(Line)+default_linebuf_size);
 				ln->next = old->next;
 				ln->prev = old;
+				if (old->next) old->next->prev = ln;
 				old->next = ln;
-				mmove(curbuf, 0, 1);
+				memcpy(ln->data, old->data+idx, len);
+				old->data[idx+0] = L'\n';
+				old->data[idx+1] = 0;
+				mmove(buf, 0, 1);
 			}
 		}
 		break;
 	default:
 		{
-			memcpy(ln->data+idx+1, ln->data+idx, len * sizeof(wchar_t));
+			memcpy(ln->data+idx+1, ln->data+idx, len);
 			ln->data[idx] = wc;
 			buf->cursor.c.x++;
 		}
 		break;
+	}
+}
+
+void mfreeln(Line *ln) {
+	if (ln) {
+		if (ln->prev)
+			ln->prev->next = ln->next;
+		if (ln->next)
+			ln->next->prev = ln->prev;
+		free(ln);
 	}
 }
 
@@ -377,12 +430,33 @@ void mmove(Buffer *buf, int x, int y) {
 	buf->cursor.c.x = max(min(buf->cursor.c.x, len), 0);
 }
 
+void mjump(Buffer *buf, Marker mark) {
+	switch(mark) {
+	case MARKER_START:
+		curbuf->cursor.c.x = 0;
+		break;
+	case MARKER_MIDDLE:
+		{
+			Line *ln = curbuf->curline;
+			size_t len = wcslen(ln->data);
+			curbuf->cursor.c.x = max((len/2)-1, 0);
+		}
+		break;
+	case MARKER_END:
+		{
+			Line *ln = curbuf->curline;
+			size_t len = wcslen(ln->data);
+			curbuf->cursor.c.x = len;
+		}
+		break;
+	}
+}
+
 void mrepeat(const Action *ac, int n) {
 	int i;
 	n = min(n, max_cmd_repetition);
-	for (i = 0; i < n; ++i) {
+	for (i = 0; i < n; ++i)
 		ac->fn(ac);
-	}
 }
 
 void mruncmd(wchar_t *buf) {
@@ -479,8 +553,6 @@ void mpaintstat() {
 	mvwprintw(statuswin, 0, col - bufsize, "%s", textbuf);
 	if (use_colors) wattroff(statuswin, COLOR_PAIR(PAIR_STATUS_HIGHLIGHT));
 
-	wrefresh(statuswin);
-
 	if (use_colors) wattroff(statuswin, COLOR_PAIR(PAIR_STATUS_BAR));
 }
 
@@ -495,24 +567,29 @@ void mpaintln(Buffer *buf, Line *ln, WINDOW *win, int y, int n, bool numbers) {
 		/* Default line formatting */
 		int x = buf->linexoff, len = wcslen(ln->data);
 		for (i = 0; i < len; ++i) {
-			const wchar_t c = ln->data[i];
+			wchar_t c = ln->data[i];
 			switch (c) {
+			case L'\0':
+			case L'\n':
 			case L'\t':
 			{
 				for (j = 0; j < tab_width; ++j) {
 					cchar_t cc;
+					c = L' ';
 					setcchar(&cc, &c, 0, 0, 0);
 					mvwadd_wch(win, y, x, &cc);
 					x++;
 				}
-			} break;
+			}
+			break;
 			default:
 			{
 				cchar_t cc;
 				setcchar(&cc, &c, 0, 0, 0);
 				mvwadd_wch(win, y, x, &cc);
 				x++;
-			} break;
+			}
+			break;
 			}
 		}
 	}
@@ -532,10 +609,8 @@ void mpaintbuf(Buffer *buf, WINDOW *win, bool numbers) {
 		mpaintln(buf, ln, win, i, l, numbers);
 
 	/* Paint from the cursor to the top */
-	for (i = cp, l = 0, ln = buf->curline; i>=0 && ln; --i, ++l, ln = ln->prev)
+	for (i = cp, l = 0, ln = buf->curline; i >= 0 && ln; --i, ++l, ln = ln->prev)
 		mpaintln(buf, ln, win, i, l, numbers);
-
-	wrefresh(win);
 }
 
 void mpaintcmd() {
@@ -555,8 +630,6 @@ void mpaintcmd() {
 	mvwprintw(cmdwin, 0, col - bufsize, "%s", textbuf);
 
 	if (use_colors) wattroff(cmdwin, COLOR_PAIR(PAIR_STATUS_HIGHLIGHT));
-
-	wrefresh(cmdwin);
 }
 
 void repaint() {
@@ -565,14 +638,16 @@ void repaint() {
 	delwin(statuswin);
 	delwin(cmdwin);
 	delwin(bufwin);
-	refresh();
 	statuswin = newwin(1, col, 0, 0);
 	bufwin = newwin(row-2, col, 1, 0);
 	cmdwin = newwin(1, col, row-1, 0);
-	mpaintbuf(curbuf, bufwin, true);
 	mpaintstat();
 	mpaintcmd();
+	mpaintbuf(curbuf, bufwin, true);
 	mupdatecursor();
+	wrefresh(statuswin);
+	wrefresh(cmdwin);
+	wrefresh(bufwin);
 }
 
 void handlemouse() {
@@ -590,6 +665,9 @@ void handlemouse() {
 }
 
 void quit() {
+	Buffer *buf;
+	for (buf = buflist; buf; buf = buf->next)
+		mfreebuf(buf);
 	delwin(cmdwin);
 	delwin(bufwin);
 	delwin(statuswin);
@@ -645,6 +723,10 @@ void motion(const Action *ac) {
 	mmove(curbuf, ac->arg.x, ac->arg.y);
 }
 
+void jump(const Action *ac) {
+	mjump(curbuf, ac->arg.m);
+}
+
 void pgup() {
 	int row, col;
 	getmaxyx(bufwin, row, col);
@@ -666,22 +748,29 @@ void bufsel(const Action *ac) {
 	}
 }
 
+void bufdel(const Action *ac) {
+	if (!ac->arg.i) {
+		mfreebuf(curbuf);
+	}
+}
+
 void insert(const Action *ac) {
 	minsert(curbuf, ac->arg.i);
 }
 
-void deleteline() {
-	Line *ln = curbuf->curline;
-	if (!ln) return;
-	if (ln->prev)
-		ln->prev->next = ln->next;
-	if (ln->next)
-		ln->next->prev = ln->prev;
-	curbuf->curline = ln->prev;
-	free(ln);
+void freeln() {
+	Line *ln = curbuf->curline, *next = ln->next;
+	mfreeln(ln);
+	curbuf->curline = next;
 }
 
-void newline() {
+void append() {
+	mjump(curbuf, MARKER_END);
+	mode = MODE_INSERT;
+}
+
+void newln() {
+	mjump(curbuf, MARKER_END);
 	minsert(curbuf, L'\n');
 	mode = MODE_INSERT;
 }
