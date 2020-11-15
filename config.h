@@ -16,7 +16,7 @@ const short color_pairs[NUM_COLOR_PAIRS][2] = {
 	{  COLOR_YELLOW,    COLOR_BG },
 };
 
-const char manual_path[] = "readme.txt";
+const char manual_path[] = "README";
 
 /* See mett.c for function declarations */
 const Action buffer_actions[] = {
