@@ -31,8 +31,8 @@ const Action buffer_actions[] = {
 	{  NULL,        KEY_BACKSPACE, motion,     { .x = -1 } },
 	{  NULL,        L'\n',         motion,     { .y = +1 } },
 	{  NULL,        L' ',          motion,     { .x = +1 } },
-	{  L"home",     KEY_HOME,      motion,     { .x = 0 } },
-	{  L"end",      KEY_END,       motion,     { .x = +65535 } },
+	{  L"home",     KEY_HOME,      motion,     { .y = -(1<<31-1) } },
+	{  L"end",      KEY_END,       motion,     { .y = +(1<<31-1) } },
 	{  L"pgup",     KEY_PPAGE,     pgup,       {{ 0 }} },
 	{  L"pgdown",   KEY_NPAGE,     pgdown,     {{ 0 }} },
 
