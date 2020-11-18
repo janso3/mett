@@ -129,7 +129,10 @@ int main(int argc, char **argv) {
 	/* Init buffers */
 	cmdbuf = mnewbuf();
 	cmdbuf->linexoff = 0;
-	signal(SIGINT, msighandler);
+	signal(SIGHUP,  msighandler);
+	signal(SIGKILL, msighandler);
+	signal(SIGINT,  msighandler);
+	signal(SIGTERM, msighandler);
 
 	for (i = 1; i < argc; ++i)
 		mreadbuf((curbuf = mnewbuf()), argv[i]);
@@ -208,6 +211,7 @@ void msighandler(int signum) {
 	case SIGHUP:
 	case SIGKILL:
 	case SIGINT:
+	case SIGTERM:
 		quit();
 		break;
 	}
@@ -250,8 +254,7 @@ void mfreebuf(Buffer *buf) {
 
 int mreadbuf(Buffer *buf, const char *path) {
 	FILE *fp;
-	const size_t len = default_linebuf_size;
-	wchar_t linecnt[len];
+	wchar_t linecnt[default_linebuf_size];
 	Line *ln;
 
 	ln = buf->lines;
@@ -261,12 +264,13 @@ int mreadbuf(Buffer *buf, const char *path) {
 		return 0;
 	}
 
-	while (fgetws(linecnt, len, fp) == linecnt) {
+	while (fgetws(linecnt, default_linebuf_size, fp) == linecnt) {
 		Line *curln = ln;
+		int len = wcslen(linecnt);
 		if (!curln) break;
-		wcsncpy(ln->data, linecnt, len);
+		wcsncpy(ln->data, linecnt, default_linebuf_size);
 		ln->data[len-1] = 0;
-		if (!(ln->next = (Line*)calloc(sizeof(Line)+len, sizeof(wchar_t)))) return 0;
+		if (!(ln->next = (Line*)calloc(sizeof(Line)+default_linebuf_size*sizeof(wchar_t), 1))) return 0;
 		ln->length = default_linebuf_size;
 		ln = ln->next;
 		ln->prev = curln;
@@ -339,8 +343,8 @@ void minsert(Buffer *buf, wint_t key) {
 			buf->cursor.c.x--;
 		} else if (ln->prev) {
 			int plen = wcslen(ln->prev->data);
-			memcpy(ln->prev->data+plen-1, ln->data, len);
-			mmove(buf, plen, -1);
+			memcpy(ln->prev->data+plen, ln->data, len);
+			mmove(buf, plen + buf->cursor.c.x, -1);
 			buf->curline = ln->prev;
 			mfreeln(ln);
 		}
@@ -360,8 +364,8 @@ void minsert(Buffer *buf, wint_t key) {
 				if (old->next) old->next->prev = ln;
 				old->next = ln;
 				memcpy(ln->data, old->data+idx, len);
-				old->data[idx+0] = L'\n';
-				old->data[idx+1] = 0;
+				old->data[idx] = 0;
+				mjump(buf, MARKER_START);
 				mmove(buf, 0, 1);
 			}
 		}
@@ -422,7 +426,7 @@ void mmove(Buffer *buf, int x, int y) {
 
 	/* Restrict cursor to line content */
 	len = wcslen(buf->curline->data);
-	buf->cursor.c.x = max(min(buf->cursor.c.x, len-1), 0);
+	buf->cursor.c.x = max(min(buf->cursor.c.x, len), 0);
 }
 
 void mjump(Buffer *buf, Marker mark) {
@@ -434,14 +438,14 @@ void mjump(Buffer *buf, Marker mark) {
 		{
 			Line *ln = curbuf->curline;
 			size_t len = wcslen(ln->data);
-			curbuf->cursor.c.x = (len/2)-1;
+			curbuf->cursor.c.x = (len/2);
 		}
 		break;
 	case MARKER_END:
 		{
 			Line *ln = curbuf->curline;
 			size_t len = wcslen(ln->data);
-			curbuf->cursor.c.x = max(len-1, 0);
+			curbuf->cursor.c.x = max(len, 0);
 		}
 		break;
 	}
@@ -703,6 +707,7 @@ void save(const Action *ac) {
 	if (!(src = fopen(ac->arg.v ? ac->arg.v : curbuf->path, "w+"))) return;
 	for (ln = curbuf->lines; ln && ln->next; ln = ln->next) {
 		fputws(ln->data, src);
+		fputws(L"\n", src);
 	}
 
 	fclose(src);
