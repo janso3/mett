@@ -1,5 +1,5 @@
 INCS =
-LIBS = -lncurses
+LIBS = -lncursesw
 CFLAGS = $(INCS) -g -O2 -std=c11 -pedantic-errors
 LDFLAGS = $(LIBS)
 
