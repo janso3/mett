@@ -348,8 +348,6 @@ void minsert(Buffer *buf, wint_t key) {
 		{
 			if (mode == MODE_COMMAND) {
 				mruncmd(cmdbuf->curline->data);
-				//mclearbuf(cmdbuf);
-				//mode = MODE_NORMAL;
 			} else {
 				Line *old = ln;
 		 		ln = (Line*)calloc(sizeof(wchar_t), sizeof(Line)+default_linebuf_size);
@@ -426,20 +424,20 @@ void mmove(Buffer *buf, int x, int y) {
 void mjump(Buffer *buf, Marker mark) {
 	switch(mark) {
 	case MARKER_START:
-		mmove(buf, 0, 0);
+		curbuf->cursor.c.x = 0;
 		break;
 	case MARKER_MIDDLE:
 		{
 			Line *ln = curbuf->curline;
 			size_t len = wcslen(ln->data);
-			mmove(buf, (len/2)-1, 0);
+			curbuf->cursor.c.x = (len/2)-1;
 		}
 		break;
 	case MARKER_END:
 		{
 			Line *ln = curbuf->curline;
 			size_t len = wcslen(ln->data);
-			mmove(buf, max(len, 0), 0);
+			curbuf->cursor.c.x = max(len-1, 0);
 		}
 		break;
 	}
@@ -758,9 +756,9 @@ void freeln() {
 	if (next) {
 		curbuf->curline = next;
 		mfreeln(ln);
-	}
-	if (ln == curbuf->lines) {
-		curbuf->lines = next;
+		if (ln == curbuf->lines) {
+			curbuf->lines = next;
+		}
 	}
 }
 
