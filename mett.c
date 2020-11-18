@@ -1,4 +1,4 @@
-#define NCURSES_WIDECHAR 1
+#define _XOPEN_SOURCE_EXTENDED
 #include <ctype.h>
 #include <curses.h>
 #include <locale.h>
@@ -28,7 +28,7 @@ typedef struct {
 typedef struct {
 	Coord c; /* Cursor coordinate */
 	Coord v; /* Visual selection end */
-	int starty; /* Y-Offset of the view */
+	int starty;
 } Cursor;
 
 typedef struct line_ {
@@ -78,7 +78,7 @@ static void mclearbuf(Buffer*);
 static int  mnumlines(Buffer*);
 
 static void mupdatecursor();
-static void minsert(Buffer*, int);
+static void minsert(Buffer*, wint_t);
 static void mfreeln(Line*);
 static void mmove(Buffer*, int, int);
 static void mjump(Buffer*, Marker);
@@ -116,13 +116,13 @@ static Mode mode = MODE_NORMAL;
 static WINDOW *bufwin, *statuswin, *cmdwin;
 static Buffer *buflist, *curbuf, *cmdbuf;
 static int repcnt = 0;
-static char unibuf[5];
 
 /* We make all the declarations available to the user */
 #include "config.h"
 
 int main(int argc, char **argv) {
-	int i, key;
+	int i;
+	wint_t key;
 
 	setlocale(LC_ALL, "");
 
@@ -157,7 +157,8 @@ int main(int argc, char **argv) {
 
 	repaint();
 	for (;;) {
-		if ((key = wgetch(stdscr)) != ERR) {
+		get_wch(&key);
+		if (key != ERR) {
 			switch (mode) {
 			case MODE_NORMAL:
 				/* Special keys will cancel action sequences */
@@ -258,6 +259,7 @@ int mreadbuf(Buffer *buf, const char *path) {
 	if (!(fp = fopen(path, "r"))) return 0;
 	while (fgetws(linecnt, len, fp) == linecnt) {
 		Line *curln = ln;
+		if (!curln) break;
 		wcsncpy(ln->data, linecnt, len);
 		ln->data[len-1] = 0;
 		if (!(ln->next = (Line*)calloc(sizeof(Line)+len, sizeof(wchar_t)))) return 0;
@@ -317,20 +319,16 @@ void mupdatecursor() {
 	}
 }
 
-void minsert(Buffer *buf, int key) {
+void minsert(Buffer *buf, wint_t key) {
 	int i, idx, len;
-	wchar_t wc;
 	Line *ln;
 
 	if (!buf || !(ln = buf->curline)) return;
 
-	/* TODO: handle unicode */
-	wc = key;
-
 	idx = buf->cursor.c.x;
 	len = (wcslen(ln->data)+1) * sizeof(wchar_t);
 
-	switch (wc) {
+	switch (key) {
 	case KEY_BACKSPACE:
 		if (idx) {
 			memcpy(ln->data+idx-1, ln->data+idx, len);
@@ -369,7 +367,7 @@ void minsert(Buffer *buf, int key) {
 	default:
 		{
 			memcpy(ln->data+idx+1, ln->data+idx, len);
-			ln->data[idx] = wc;
+			ln->data[idx] = key;
 			buf->cursor.c.x++;
 		}
 		break;
@@ -389,16 +387,11 @@ void mfreeln(Line *ln) {
 void mmove(Buffer *buf, int x, int y) {
 	int i, len;
 	int row, col;
+
 	getmaxyx(bufwin, row, col);
 
 	/* left / right */
-	if (x == -1) {
-		buf->cursor.c.x = max(buf->cursor.c.x-1, 0);
-	} else if (x == +1) {
-		buf->cursor.c.x = min(buf->cursor.c.x+1, col-buf->linexoff-1);
-	} else {
-		buf->cursor.c.x = x;
-	}
+	buf->cursor.c.x += x;
 
 	/* up / down */
 	if (y < 0) {
@@ -427,26 +420,26 @@ void mmove(Buffer *buf, int x, int y) {
 
 	/* Restrict cursor to line content */
 	len = wcslen(buf->curline->data);
-	buf->cursor.c.x = max(min(buf->cursor.c.x, len), 0);
+	buf->cursor.c.x = max(min(buf->cursor.c.x, len-1), 0);
 }
 
 void mjump(Buffer *buf, Marker mark) {
 	switch(mark) {
 	case MARKER_START:
-		curbuf->cursor.c.x = 0;
+		mmove(buf, 0, 0);
 		break;
 	case MARKER_MIDDLE:
 		{
 			Line *ln = curbuf->curline;
 			size_t len = wcslen(ln->data);
-			curbuf->cursor.c.x = max((len/2)-1, 0);
+			mmove(buf, (len/2)-1, 0);
 		}
 		break;
 	case MARKER_END:
 		{
 			Line *ln = curbuf->curline;
 			size_t len = wcslen(ln->data);
-			curbuf->cursor.c.x = max(len, 0);
+			mmove(buf, max(len, 0), 0);
 		}
 		break;
 	}
@@ -761,9 +754,14 @@ void insert(const Action *ac) {
 }
 
 void freeln() {
-	Line *ln = curbuf->curline, *next = ln->next;
-	mfreeln(ln);
-	curbuf->curline = next;
+	Line *ln = curbuf->curline, *next = ln->next ? ln->next : ln->prev;
+	if (next) {
+		curbuf->curline = next;
+		mfreeln(ln);
+	}
+	if (ln == curbuf->lines) {
+		curbuf->lines = next;
+	}
 }
 
 void append() {
