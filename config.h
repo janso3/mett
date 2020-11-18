@@ -16,7 +16,7 @@ const short color_pairs[NUM_COLOR_PAIRS][2] = {
 	{  COLOR_YELLOW,    COLOR_BG },
 };
 
-const char manual_path[] = "README";
+const char manual_path[] = "readme.txt";
 
 /* See mett.c for function declarations */
 const Action buffer_actions[] = {
@@ -27,6 +27,10 @@ const Action buffer_actions[] = {
 	{  L"down",     L'j',          motion,      { .y = +1 } },
 	{  L"up",       L'k',          motion,      { .y = -1 } },
 	{  L"right",    L'l',          motion,      { .x = +1 } },
+	{  NULL,        KEY_LEFT,      motion,      { .x = -1 } },
+	{  NULL,        KEY_DOWN,      motion,      { .y = +1 } },
+	{  NULL,        KEY_UP,        motion,      { .y = -1 } },
+	{  NULL,        KEY_RIGHT,     motion,      { .x = +1 } },
 	{  NULL,        KEY_BACKSPACE, motion,      { .x = -1 } },
 	{  NULL,        L'\n',         motion,      { .y = +1 } },
 	{  NULL,        L' ',          motion,      { .x = +1 } },
