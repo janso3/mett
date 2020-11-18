@@ -18,3 +18,7 @@ Configuration
 -------------
 You can configure most aspects of mett by editing config.h and recompiling
 (some knowledge of C is required).
+
+Usage
+-----
+See man page for METT(1).
