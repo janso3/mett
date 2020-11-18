@@ -1,0 +1,70 @@
+.TH METT 1
+.SH NAME
+mett - a text editor
+.SH SYNOPSIS
+.B mett
+.IR [file ...]
+.SH DESCRIPTION
+mett is a simple vi-like text editor. It has four different modes of
+operation: \fInormal\fR, \fIinsert\fR, \fIcommand\fR and \fIselect\fR.
+.P
+Every command can either be bound to a key (active only in \fInormal\fR mode),
+executed using its full name in \fIcommand\fR mode, or both.
+\fIcommand\fR mode will also accept the keyboard binding as an alias.
+.P
+Commands always operate on the currently selected buffer and can be
+automatically repeated with a decimal prefix.
+.SH USAGE
+.SS Commands
+.TP
+.B h
+Move left
+.TP
+.B j
+Move down
+.TP
+.B k
+Move up
+.TP
+.B l
+Move right
+.TP
+.B n
+Next buffer
+.TP
+.B p
+Previous buffer
+.TP
+.B i
+Enter insert mode
+.TP
+.B v
+Enter visual selection mode
+.TP
+.B :
+Enter command mode
+.TP
+.B ESC
+Cancel current action and return to normal mode
+.TP
+.B w
+Write buffer to file
+.TP
+.B a
+Equivalent to backspace
+.TP
+.B x
+Equivalent to delete
+.TP
+.B z
+Delete the current line
+.TP
+.B A
+Append to line
+.TP
+.B o
+Create new line below the current one
+.TP
+.B q
+Quit the editor
+.TP
