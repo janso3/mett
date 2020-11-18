@@ -130,16 +130,15 @@ int main(int argc, char **argv) {
 	cmdbuf = mnewbuf();
 	cmdbuf->linexoff = 0;
 	signal(SIGINT, msighandler);
-	for (i = 1; i < argc; ++i) {
-		mreadbuf((curbuf = mnewbuf()), argv[i]);
-	}
 
-	if (!curbuf) {
+	for (i = 1; i < argc; ++i)
+		mreadbuf((curbuf = mnewbuf()), argv[i]);
+
+	if (!curbuf)
 		curbuf = mnewbuf();
-	}
 
 	/* Init curses */
-	initscr();
+	newterm(NULL, stderr, stderr);
 	clear();
 	refresh();
 	noecho();
@@ -256,7 +255,12 @@ int mreadbuf(Buffer *buf, const char *path) {
 	Line *ln;
 
 	ln = buf->lines;
-	if (!(fp = fopen(path, "r"))) return 0;
+	if (path[0] == '-') {
+		fp = stdin;
+	} else if (!(fp = fopen(path, "r"))) {
+		return 0;
+	}
+
 	while (fgetws(linecnt, len, fp) == linecnt) {
 		Line *curln = ln;
 		if (!curln) break;
