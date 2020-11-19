@@ -41,6 +41,7 @@ const Action buffer_actions[] = {
 	{  NULL,        L'0',          jump,        { .m = MARKER_START } },
 	{  NULL,        L'&',          jump,        { .m = MARKER_MIDDLE } },
 	{  NULL,        L'$',          jump,        { .m = MARKER_END } },
+	{  L"coc",      L'C',          coc,         {{ 0 }} },
 
 	/* Buffer management */
 	{  L"nextb",    L'n',          bufsel,      { .i = +1 } },

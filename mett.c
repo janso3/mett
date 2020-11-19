@@ -102,6 +102,7 @@ static void readfile(const Action*);
 static void command(const Action*);
 static void motion(const Action*);
 static void jump(const Action*);
+static void coc();
 static void pgup();
 static void pgdown();
 static void bufsel(const Action*);
@@ -727,6 +728,13 @@ void motion(const Action *ac) {
 
 void jump(const Action *ac) {
 	mjump(curbuf, ac->arg.m);
+}
+
+void coc() {
+	/* Center on cursor */
+	int row, col;
+	getmaxyx(bufwin, row, col);
+	curbuf->cursor.starty = -(row / 2 - curbuf->cursor.c.y);
 }
 
 void pgup() {
