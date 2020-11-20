@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wctype.h>
 
 typedef enum {
 	MODE_NORMAL,
@@ -79,9 +80,11 @@ static int  mnumlines(Buffer*);
 
 static void mupdatecursor();
 static void minsert(Buffer*, wint_t);
+static int  mindent(Line*, int);
 static void mfreeln(Line*);
 static void mmove(Buffer*, int, int);
 static void mjump(Buffer*, Marker);
+
 static void mrepeat(const Action*, int);
 static void mruncmd(wchar_t*);
 
@@ -254,32 +257,33 @@ void mfreebuf(Buffer *buf) {
 }
 
 int mreadbuf(Buffer *buf, const char *path) {
-	FILE *fp;
-	wchar_t linecnt[default_linebuf_size];
-	Line *ln;
+	FILE *fp = NULL;
 
-	ln = buf->lines;
-	if (path[0] == '-') {
+	if (path[0] == '-' && !path[1]) {
 		fp = stdin;
-	} else if (!(fp = fopen(path, "r"))) {
-		return 0;
+	} else {
+		fp = fopen(path, "r");
 	}
 
-	while (fgetws(linecnt, default_linebuf_size, fp) == linecnt) {
-		Line *curln = ln;
-		int len = wcslen(linecnt);
-		if (!curln) break;
-		wcsncpy(ln->data, linecnt, default_linebuf_size);
-		ln->data[len-1] = 0;
-		if (!(ln->next = (Line*)calloc(sizeof(Line)+default_linebuf_size*sizeof(wchar_t), 1))) return 0;
-		ln->length = default_linebuf_size;
-		ln = ln->next;
-		ln->prev = curln;
+	if (fp) {
+		wchar_t linecnt[default_linebuf_size];
+		Line *ln = buf->lines;
+		while (fgetws(linecnt, default_linebuf_size, fp) == linecnt) {
+			Line *curln = ln;
+			int len = wcslen(linecnt);
+			if (!curln) break;
+			wcsncpy(ln->data, linecnt, default_linebuf_size);
+			ln->data[len-1] = 0;
+			if (!(ln->next = (Line*)calloc(sizeof(Line)+default_linebuf_size*sizeof(wchar_t), 1))) return 0;
+			ln->length = default_linebuf_size;
+			ln = ln->next;
+			ln->prev = curln;
+		}
 	}
 
 	buf->path = (char*)calloc(1, strlen(path)+1);
 	strcpy(buf->path, path);
-	fclose(fp);
+	if (fp) fclose(fp);
 
 	return 1;
 }
@@ -358,16 +362,30 @@ void minsert(Buffer *buf, wint_t key) {
 			if (mode == MODE_COMMAND) {
 				mruncmd(cmdbuf->curline->data);
 			} else {
+				int ox = 0;
 				Line *old = ln;
+
 		 		ln = (Line*)calloc(sizeof(wchar_t), sizeof(Line)+default_linebuf_size);
 				ln->next = old->next;
 				ln->prev = old;
 				if (old->next) old->next->prev = ln;
 				old->next = ln;
-				memcpy(ln->data, old->data+idx, len);
+
+				if (auto_indent) {
+					/* Indent to the last position */
+					int x, mx;
+					for (x = mx = 0; x < idx; ++x) {
+						if (old->data[x] == L'\t') mx += tab_width;
+						else if (iswspace(old->data[x])) mx++;
+						else break;
+					}
+					ox = mindent(ln, mx);
+				}
+
+				memcpy(ln->data+ox, old->data+idx, len);
 				old->data[idx] = 0;
 				mjump(buf, MARKER_START);
-				mmove(buf, 0, 1);
+				mmove(buf, 1<<30, 1);
 			}
 		}
 		break;
@@ -379,6 +397,20 @@ void minsert(Buffer *buf, wint_t key) {
 		}
 		break;
 	}
+}
+
+int mindent(Line *ln, int n) {
+	int i, tabs, spaces;
+
+	tabs = n / tab_width;
+	spaces = n % tab_width;
+
+	for (i = 0; i < tabs; ++i)
+		ln->data[i] = L'\t';
+	for (; i < spaces; ++i)
+		ln->data[i] = L' ';
+
+	return tabs + spaces;
 }
 
 void mfreeln(Line *ln) {
@@ -706,7 +738,7 @@ void save(const Action *ac) {
 	}
 
 	if (!(src = fopen(ac->arg.v ? ac->arg.v : curbuf->path, "w+"))) return;
-	for (ln = curbuf->lines; ln && ln->next; ln = ln->next) {
+	for (ln = curbuf->lines; ln; ln = ln->next) {
 		fputws(ln->data, src);
 		fputws(L"\n", src);
 	}

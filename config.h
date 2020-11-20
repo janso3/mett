@@ -77,6 +77,7 @@ const Action buffer_actions[] = {
 
 static bool use_colors = TRUE;
 static bool line_numbers = TRUE;
+static bool auto_indent = TRUE;
 
 /* Maximum line size in bytes until reallocation */
 const unsigned default_linebuf_size = 128*4;
