@@ -47,6 +47,7 @@ const Action buffer_actions[] = {
 	{  L"nextb",    L'n',          bufsel,      { .i = +1 } },
 	{  L"prevb",    L'p',          bufsel,      { .i = -1 } },
 	{  L"bd",       0,             bufdel,      { .i = 0 } },
+	{  L"edit",     0,             readfile,    {{ 0 }} },
 
 	/* Mode switching */
 	{  NULL,        ESC,           setmode,     { .i = MODE_NORMAL } },
@@ -90,9 +91,3 @@ const char *backup_path = "/tmp/.mett-backup";
 
 const int cmd_history_size = 16;
 const int max_cmd_repetition = 65536;
-
-/* Filetype-formatting hooks */
-const Formatter formatters[] = {
-	/* Filename */
-	{ "*.c", mformat_c },
-};

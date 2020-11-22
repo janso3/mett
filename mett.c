@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 #include <wctype.h>
 
 typedef enum {
@@ -38,12 +39,10 @@ typedef struct line_ {
 	wchar_t data[];
 } Line;
 
-struct formatter_;
 typedef struct buffer_ {
 	struct buffer_ *next, *prev;
 	char *path;
 	Line *lines, *curline;
-	struct formatter_ *formatln;
 	Cursor cursor;
 	int linexoff;
 } Buffer;
@@ -59,11 +58,6 @@ typedef struct {
 		Marker m;
 	} arg;
 } Action;
-
-typedef struct formatter_ {
-	char *suffix;
-	void (*linefn)(Buffer*, char*, int, int);
-} Formatter;
 
 /* Internal functions */
 static int32_t min(int32_t, int32_t);
@@ -88,7 +82,6 @@ static void mjump(Buffer*, Marker);
 static void mrepeat(const Action*, int);
 static void mruncmd(wchar_t*);
 
-static void mformat_c(Buffer*, char*, int, int);
 static void mpaintstat();
 static void mpaintln(Buffer*, Line*, WINDOW*, int, int, bool);
 static void mpaintbuf(Buffer*, WINDOW*, bool);
@@ -385,7 +378,8 @@ void minsert(Buffer *buf, wint_t key) {
 				memcpy(ln->data+ox, old->data+idx, len);
 				old->data[idx] = 0;
 				mjump(buf, MARKER_START);
-				mmove(buf, 1<<30, 1);
+				mmove(buf, 0, 1);
+				buf->cursor.c.x = ox;
 			}
 		}
 		break;
@@ -491,74 +485,54 @@ void mrepeat(const Action *ac, int n) {
 		ac->fn(ac);
 }
 
+int findchr(wchar_t *buf, int start, wchar_t c) {
+	int i, len;
+	len = wcslen(buf);
+	for (i = start; i < len; ++i) {
+		if (buf[i] == c) return i;
+	}
+	return -1;
+}
+
 void mruncmd(wchar_t *buf) {
-	/* TODO
-	 * Every command can be written either as its keyboard shortcut or
-	 * as the full string. You can chain commands one after the other.
-	 * Every command can be prefixed with a decimal repetition count.
-	 * Whitespace is ignored.
-	 *
-	 * For example, "10down 5lw  q" will:
-	 * 1) Move down 10 lines
-	 * 2) Move right 5 places
-	 * 3) Write the buffer
-	 * 4) Quit the editor
-	 */
+	wchar_t *cmd = NULL;
+	char *arg = NULL;
+	int cnt, exlen, cmdlen;
 	int i;
+
+	/* Parse decimal repetition count */
+	if (!(cnt = wcstol(buf, &cmd, 10))) cnt = 1;
+
+	/* Find length of command */
+	exlen = wcslen(cmd);
+	if ((cmdlen = findchr(cmd, 0, L' ')) < 0) {
+		cmdlen = exlen;
+	}
+
+	/* Parse optional argument */
+	if (exlen > cmdlen) {
+		const wchar_t *warg = &cmd[cmdlen+1];
+		arg = (char*)malloc((exlen - cmdlen) * 4);
+		wcsrtombs(arg, &warg, (exlen - cmdlen) * 4, NULL);
+	}
+
 	for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
-		wchar_t *cmd = NULL;
-		long cnt, cmdlen;
-		if (!(cnt = wcstol(buf, &cmd, 10))) cnt = 1;
-		cmdlen = wcslen(cmd);
 		if (buffer_actions[i].cmd) {
 			/* Check for valid command */
 			if (/* Either the single-char keyboard shortcut... */
-					(cmdlen == 1 && buffer_actions[i].key == cmd[0])
-					/* ...or the full command */
-					|| !wcsncmp(buffer_actions[i].cmd, cmd, cmdbuf->curline->length)) {
-				long j;
-				mrepeat(&buffer_actions[i], cnt);
+			    (cmdlen == 1 && buffer_actions[i].key == cmd[0])
+			    /* ...or the full command */
+			    || !wcsncmp(buffer_actions[i].cmd, cmd, cmdlen)) {
+				Action ac;
+				memcpy(&ac, &buffer_actions[i], sizeof(Action));
+				if (arg) ac.arg.v = arg;
+				mrepeat(&ac, cnt);
 			}
 		}
 	}
+
+	free(arg);
 }
-
-void mformat_c(Buffer *buf, char *line, int xoff, int n) {
-	const char *keywords[] = {
-		"auto", "break", "case", "char", "const", "continue", "default",
-		"do", "double", "else", "enum", "extern", "float", "for",
-		"goto", "if", "inline", "int", "long", "register", "restrict",
-		"return", "short", "signed", "sizeof", "static", "struct", "switch",
-		"typedef", "union", "unsigned", "void", "volatile", "while",
-		"_Alignas", "_Alignof", "_Atomic", "_Bool", "_Complex",
-		"_Generic", "_Imaginary", "_Noreturn", "_Static_assert", "_Thread_local",
-		"asm", "fortran"
-	};
-
-	const char *tokens[] = {
-		"if", "elif", "else", "endif", "defined", "ifdef", "ifndef", "define",
-		"undef", "include", "line", "error", "pragma", "_Pragma"
-	};
-
-	int i, j, xpos = xoff, len = strlen(line);
-
-	for (i = 0; i < len; ++i) {
-		const char c = line[i];
-		switch (c) {
-		case '\t':
-			for (j = 0; j < tab_width; ++j) {
-				mvwaddch(bufwin, n, xpos, ' ');
-				xpos++;
-			}
-			break;
-		default:
-			mvwaddch(bufwin, n, xpos, c);
-			xpos++;
-			break;
-		}
-	}
-}
-
 void mpaintstat() {
 	Buffer *cur = buflist;
 	int row, col, nlines, bufsize;
