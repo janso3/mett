@@ -7,6 +7,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <wchar.h>
 #include <wctype.h>
 
@@ -94,6 +97,7 @@ static void quit();
 static void setmode(const Action*);
 static void save(const Action*);
 static void readfile(const Action*);
+static void readstr(const Action*);
 
 static void command(const Action*);
 static void motion(const Action*);
@@ -494,6 +498,38 @@ int findchr(wchar_t *buf, int start, wchar_t c) {
 	return -1;
 }
 
+char* mexec(const char *cmd) {
+	/* Execute cmd and return stdout */
+  static char buf[1024 * 64];
+	int pipes[2];
+  pid_t pid;
+
+	if (pipe(pipes) == -1)
+		return NULL;
+
+	if ((pid = fork()) == -1)
+		return NULL;
+
+	if (!pid) {
+		dup2(pipes[1], STDOUT_FILENO);
+		close(pipes[0]);
+		close(pipes[1]);
+		system(cmd);
+		exit(0);
+	} else {
+		int n;
+		close(pipes[1]);
+		n = read(pipes[0], buf, sizeof(buf));
+		//wait(NULL);
+		//endwin();
+		//printf("%s\n", buf);
+		//exit(0);
+		return buf;
+	}
+
+	return NULL;
+}
+
 void mruncmd(wchar_t *buf) {
 	wchar_t *cmd = NULL;
 	char *arg = NULL;
@@ -525,8 +561,16 @@ void mruncmd(wchar_t *buf) {
 			    || !wcsncmp(buffer_actions[i].cmd, cmd, cmdlen)) {
 				Action ac;
 				memcpy(&ac, &buffer_actions[i], sizeof(Action));
-				if (arg) ac.arg.v = arg;
+				if (arg) {
+					/* Check for shell command */
+					if (arg[0] == '!')
+						ac.arg.v = mexec(arg+1);
+					else
+						ac.arg.v = arg;
+				}
+				mode = MODE_INSERT;
 				mrepeat(&ac, cnt);
+				mode = MODE_COMMAND;
 			}
 		}
 	}
@@ -696,7 +740,6 @@ void save(const Action *ac) {
 	Line *ln;
 
 	if (!ac->arg.v && !curbuf->path) {
-		/* TODO: Let the user enter the path */
 		return;
 	}
 
@@ -722,6 +765,14 @@ void save(const Action *ac) {
 
 void readfile(const Action *ac) {
 	if (ac->arg.v) mreadbuf((curbuf = mnewbuf()), ac->arg.v);
+}
+
+void readstr(const Action *ac) {
+	if (ac->arg.v) {
+		int i, len = strlen(ac->arg.v);
+		for (i = 0; i < len; ++i)
+			minsert(curbuf, ((char*)ac->arg.v)[i]);
+	}
 }
 
 void command(const Action *ac) {
