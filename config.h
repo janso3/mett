@@ -49,6 +49,7 @@ const Action buffer_actions[] = {
 	{  L"bd",       0,             bufdel,      { .i = 0 } },
 	{  L"edit",     0,             readfile,    {{ 0 }} },
 	{  L"read",     0,             readstr,     {{ 0 }} },
+	{  L"search",   L'/',          search,      {{ 0 }} },
 
 	/* Mode switching */
 	{  NULL,        ESC,           setmode,     { .i = MODE_NORMAL } },

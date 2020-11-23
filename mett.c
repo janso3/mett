@@ -2,6 +2,7 @@
 #include <ctype.h>
 #include <curses.h>
 #include <locale.h>
+#include <regex.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -32,7 +33,8 @@ typedef struct {
 
 typedef struct {
 	Coord c; /* Cursor coordinate */
-	Coord v; /* Visual selection end */
+	Coord v0; /* Visual selection start */
+	Coord v1; /* Visual selection end */
 	int starty;
 } Cursor;
 
@@ -81,6 +83,7 @@ static int  mindent(Line*, int);
 static void mfreeln(Line*);
 static void mmove(Buffer*, int, int);
 static void mjump(Buffer*, Marker);
+static void mselect(Buffer*, int, int, int, int);
 
 static void mrepeat(const Action*, int);
 static void mruncmd(wchar_t*);
@@ -98,6 +101,7 @@ static void setmode(const Action*);
 static void save(const Action*);
 static void readfile(const Action*);
 static void readstr(const Action*);
+static void search(const Action*);
 
 static void command(const Action*);
 static void motion(const Action*);
@@ -239,6 +243,7 @@ Buffer* mnewbuf() {
 	buflist->curline->length = default_linebuf_size;
 	buflist->linexoff = 4; // TODO
 	if (next) buflist->next->prev = buflist;
+	mselect(buflist, -1, -1, -1, -1);
 	return buflist;
 }
 
@@ -482,6 +487,9 @@ void mjump(Buffer *buf, Marker mark) {
 	}
 }
 
+void mselect(Buffer *buf, int x1, int y1, int x2, int y2) {
+}
+
 void mrepeat(const Action *ac, int n) {
 	int i;
 	n = min(n, max_cmd_repetition);
@@ -637,6 +645,8 @@ void mpaintln(Buffer *buf, Line *ln, WINDOW *win, int y, int n, bool numbers) {
 		break;
 		default:
 		{
+			/* Check for visual selection */
+
 			cchar_t cc;
 			setcchar(&cc, &c, 0, 0, 0);
 			mvwadd_wch(win, y, x, &cc);
@@ -730,8 +740,9 @@ void quit() {
 void setmode(const Action *ac) {
 	if ((mode = (Mode)ac->arg.i) == MODE_SELECT && curbuf) {
 		/* Capture start of visual selection */
-		curbuf->cursor.v.x = curbuf->cursor.c.x;
-		curbuf->cursor.v.y = curbuf->cursor.c.y;
+		int x = curbuf->cursor.c.x;
+		int y = curbuf->cursor.c.y;
+		mselect(curbuf, x, y, x, y);
 	}
 }
 
@@ -772,6 +783,35 @@ void readstr(const Action *ac) {
 		int i, len = strlen(ac->arg.v);
 		for (i = 0; i < len; ++i)
 			minsert(curbuf, ((char*)ac->arg.v)[i]);
+	}
+}
+
+void search(const Action *ac) {
+	if (ac->arg.v) {
+		char msgbuf[100];
+		regex_t reg;
+		Line *ln;
+		int i, y;
+
+		if ((i = regcomp(&reg, ac->arg.v, 0))) {
+			regerror(i, &reg, msgbuf, sizeof(msgbuf));
+			return;
+		}
+
+		for (ln = curbuf->lines, y = 0; ln; ln = ln->next, ++y) {
+			char buf[default_linebuf_size * 4];
+			const wchar_t *wdat = ln->data;
+			regmatch_t match;
+
+			wcsrtombs(buf, &wdat, sizeof(buf), NULL);
+			i = regexec(&reg, buf, 1, &match, 0);
+			if (!i) {
+				/* Jump to location, center on cursor */
+				mmove(curbuf, 0, y - (curbuf->cursor.c.y + curbuf->cursor.starty));
+				break;
+			}
+		}
+		regfree(&reg);
 	}
 }
 
