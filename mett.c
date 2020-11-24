@@ -2,6 +2,7 @@
 #include <ctype.h>
 #include <curses.h>
 #include <locale.h>
+#include <math.h>
 #include <regex.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -76,6 +77,7 @@ static void mfreebuf(Buffer*);
 static int  mreadbuf(Buffer*, const char*);
 static void mclearbuf(Buffer*);
 static int  mnumlines(Buffer*);
+static int  mnumvislines(Line*);
 
 static void mupdatecursor();
 static void minsert(Buffer*, wint_t);
@@ -101,7 +103,7 @@ static void setmode(const Action*);
 static void save(const Action*);
 static void readfile(const Action*);
 static void readstr(const Action*);
-static void search(const Action*);
+static void find(const Action*);
 
 static void command(const Action*);
 static void motion(const Action*);
@@ -311,11 +313,21 @@ int mnumlines(Buffer *buf) {
 	return n;
 }
 
+int mnumvislines(Line *ln) {
+	/* How many 'visual lines' will be needed
+	 * in order to display 'ln'?
+	 */
+	int len, row, col;
+	getmaxyx(bufwin, row, col);
+	len = wcslen(ln->data) + 4;
+	return col ? (len + col - 1) / col : 1;
+}
+
 void mupdatecursor() {
 	/* Place the cursor depending on the mode */
+	int row, col;
+	getmaxyx(stdscr, row, col);
 	if (mode == MODE_COMMAND) {
-		int row, col;
-		getmaxyx(stdscr, row, col);
 		size_t len = wcslen(cmdbuf->curline->data);
 		move(row-1, len);
 	} else {
@@ -444,7 +456,7 @@ void mmove(Buffer *buf, int x, int y) {
 			} else break;
 			if (buf->cursor.c.y < buf->cursor.starty) {
 				/* Scroll the view up */
-				buf->cursor.starty--;
+				buf->cursor.starty -= mnumvislines(buf->curline);
 			}
 		}
 	} else {
@@ -455,7 +467,7 @@ void mmove(Buffer *buf, int x, int y) {
 			} else break;
 			if (buf->cursor.c.y - buf->cursor.starty >= row) {
 				/* Scroll the view down */
-				buf->cursor.starty++;
+				buf->cursor.starty += mnumvislines(buf->curline);
 			}
 		}
 	}
@@ -615,6 +627,7 @@ void mpaintstat() {
 }
 
 void mpaintln(Buffer *buf, Line *ln, WINDOW *win, int y, int n, bool numbers) {
+	/* Returns number of 'visual lines' painted */
 	int x, len;
 	int i, j;
 	int row, col;
@@ -629,6 +642,15 @@ void mpaintln(Buffer *buf, Line *ln, WINDOW *win, int y, int n, bool numbers) {
 
 	for (i = 0; i < len; ++i) {
 		wchar_t c = ln->data[i];
+
+		/* When we hit the right edge of the screen,
+		 * we wrap to the beginning of the next line
+		 */
+		if (x >= col) {
+			x = buf->linexoff;
+			y++;
+		}
+
 		switch (c) {
 		case L'\0':
 		case L'\n':
@@ -645,8 +667,6 @@ void mpaintln(Buffer *buf, Line *ln, WINDOW *win, int y, int n, bool numbers) {
 		break;
 		default:
 		{
-			/* Check for visual selection */
-
 			cchar_t cc;
 			setcchar(&cc, &c, 0, 0, 0);
 			mvwadd_wch(win, y, x, &cc);
@@ -667,12 +687,16 @@ void mpaintbuf(Buffer *buf, WINDOW *win, bool numbers) {
 	cp = buf->cursor.c.y - buf->cursor.starty;
 
 	/* Paint from the cursor to the bottom */
-	for (i = cp, l = 0, ln = buf->curline; i < row && ln; ++i, ++l, ln = ln->next)
+	for (i = cp, l = 0, ln = buf->curline; i < row && ln; ++l, ln = ln->next) {
 		mpaintln(buf, ln, win, i, l, numbers);
+		i += mnumvislines(ln);
+	}
 
 	/* Paint from the cursor to the top */
-	for (i = cp, l = 0, ln = buf->curline; i >= 0 && ln; --i, ++l, ln = ln->prev)
+	for (i = cp, l = 0, ln = buf->curline; i >= 0 && ln; ++l, ln = ln->prev) {
 		mpaintln(buf, ln, win, i, l, numbers);
+		i -= ln->prev ? mnumvislines(ln->prev) : 1;
+	}
 }
 
 void mpaintcmd() {
@@ -786,7 +810,7 @@ void readstr(const Action *ac) {
 	}
 }
 
-void search(const Action *ac) {
+void find(const Action *ac) {
 	if (ac->arg.v) {
 		char msgbuf[100];
 		regex_t reg;
@@ -798,7 +822,8 @@ void search(const Action *ac) {
 			return;
 		}
 
-		for (ln = curbuf->lines, y = 0; ln; ln = ln->next, ++y) {
+		y = curbuf->cursor.c.y + curbuf->cursor.starty;
+		for (ln = curbuf->curline; ln; ln = ln->next, ++y) {
 			char buf[default_linebuf_size * 4];
 			const wchar_t *wdat = ln->data;
 			regmatch_t match;
@@ -806,8 +831,8 @@ void search(const Action *ac) {
 			wcsrtombs(buf, &wdat, sizeof(buf), NULL);
 			i = regexec(&reg, buf, 1, &match, 0);
 			if (!i) {
-				/* Jump to location, center on cursor */
-				mmove(curbuf, 0, y - (curbuf->cursor.c.y + curbuf->cursor.starty));
+				/* Jump to location */
+				mmove(curbuf, 0, y);
 				break;
 			}
 		}

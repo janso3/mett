@@ -1,4 +1,5 @@
 #define ESC 27
+#define CTRL(x) ((x) & 0x1F)
 #define COLOR_BG -1
 
 enum ColorPair {
@@ -44,12 +45,12 @@ const Action buffer_actions[] = {
 	{  L"coc",      L'C',          coc,         {{ 0 }} },
 
 	/* Buffer management */
-	{  L"nextb",    L'n',          bufsel,      { .i = +1 } },
-	{  L"prevb",    L'p',          bufsel,      { .i = -1 } },
+	{  L"nextb",    CTRL('n'),     bufsel,      { .i = +1 } },
+	{  L"prevb",    CTRL('p'),     bufsel,      { .i = -1 } },
 	{  L"bd",       0,             bufdel,      { .i = 0 } },
 	{  L"edit",     0,             readfile,    {{ 0 }} },
 	{  L"read",     0,             readstr,     {{ 0 }} },
-	{  L"search",   L'/',          search,      {{ 0 }} },
+	{  L"find",     L'f',          find,        {{ 0 }} },
 
 	/* Mode switching */
 	{  NULL,        ESC,           setmode,     { .i = MODE_NORMAL } },
