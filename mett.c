@@ -83,6 +83,7 @@ static void mupdatecursor();
 static void minsert(Buffer*, wint_t);
 static int  mindent(Line*, int);
 static void mfreeln(Line*);
+static void msetln(Line*, const wchar_t*);
 static void mmove(Buffer*, int, int);
 static void mjump(Buffer*, Marker);
 static void mselect(Buffer*, int, int, int, int);
@@ -180,8 +181,10 @@ int main(int argc, char **argv) {
 					repcnt = min(10 * repcnt + (key - '0'), max_cmd_repetition);
 				} else {
 					for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
-						if (key == buffer_actions[i].key)
+						if (key == buffer_actions[i].key) {
+							msetln(cmdbuf->curline, buffer_actions[i].cmd);
 							mrepeat(&buffer_actions[i], repcnt ? repcnt : 1);
+						}
 					}
 					repcnt = 0;
 				}
@@ -250,11 +253,8 @@ Buffer* mnewbuf() {
 }
 
 void mfreebuf(Buffer *buf) {
-	Line *ln;
 	if (!buf) return;
 	free(buf->path);
-	//for (ln = buf->lines; ln; ln = ln->next)
-	//	free(ln);
 	if (buf->prev) buf->prev->next = buf->next;
 	if (buf->next) buf->next->prev = buf->prev;
 	if (curbuf == buf) curbuf = buf->next;
@@ -315,8 +315,7 @@ int mnumlines(Buffer *buf) {
 
 int mnumvislines(Line *ln) {
 	/* How many 'visual lines' will be needed
-	 * in order to display 'ln'?
-	 */
+	 * in order to display the physical line? */
 	int len, row, col;
 	getmaxyx(bufwin, row, col);
 	len = wcslen(ln->data) + 4;
@@ -438,6 +437,10 @@ void mfreeln(Line *ln) {
 	}
 }
 
+void msetln(Line *ln, const wchar_t *data) {
+	if (ln && data) wcscpy(ln->data, data);
+}
+
 void mmove(Buffer *buf, int x, int y) {
 	int i, len;
 	int row, col;
@@ -540,10 +543,6 @@ char* mexec(const char *cmd) {
 		int n;
 		close(pipes[1]);
 		n = read(pipes[0], buf, sizeof(buf));
-		//wait(NULL);
-		//endwin();
-		//printf("%s\n", buf);
-		//exit(0);
 		return buf;
 	}
 
@@ -644,8 +643,7 @@ void mpaintln(Buffer *buf, Line *ln, WINDOW *win, int y, int n, bool numbers) {
 		wchar_t c = ln->data[i];
 
 		/* When we hit the right edge of the screen,
-		 * we wrap to the beginning of the next line
-		 */
+		 * we wrap to the beginning of the next line */
 		if (x >= col) {
 			x = buf->linexoff;
 			y++;

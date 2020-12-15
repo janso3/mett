@@ -60,14 +60,14 @@ const Action buffer_actions[] = {
 	{  NULL,        KEY_IC,        setmode,     { .i = MODE_INSERT } },
 
 	/* File I/O */
-	{  L"write",    L'w',          save,        { .v = NULL } },
+	{  L"write",    CTRL('w'),     save,        { .v = NULL } },
 	{  L"manual",   L'?',          readfile,    { .v = (void*)manual_path } },
 	{  L"help",     L'?',          readfile,    { .v = (void*)manual_path } },
 
 	/* Buffer modification */
-	{  L"bs",       L'a',          insert,      { .i = KEY_BACKSPACE } },
-	{  L"del",      L'x',          insert,      { .i = KEY_DC } },
-	{  L"delln",    L'z',          freeln,      {{ 0 }} },
+	{  L"bs",       CTRL('a'),     insert,      { .i = KEY_BACKSPACE } },
+	{  L"del",      CTRL('x'),     insert,      { .i = KEY_DC } },
+	{  L"delln",    'Z',           freeln,      {{ 0 }} },
 	{  NULL,        KEY_DC,        insert,      { .i = KEY_DC } },
 	{  NULL,        L'A',          append,      {{ 0 }} },
 	{  NULL,        L'o',          newln,       {{ 0 }} },
