@@ -1,3 +1,4 @@
+#define _XOPEN_SOURCE
 #define _XOPEN_SOURCE_EXTENDED
 #include <ctype.h>
 #include <curses.h>
@@ -14,6 +15,9 @@
 #include <unistd.h>
 #include <wchar.h>
 #include <wctype.h>
+
+#define SWAP(X, Y, T) { T SWAP = X; X = Y; Y = SWAP; }
+#define BINDABLE(fn) static void fn()
 
 typedef enum {
 	MODE_NORMAL,
@@ -36,21 +40,21 @@ typedef struct {
 	Coord c; /* Cursor coordinate */
 	Coord v0; /* Visual selection start */
 	Coord v1; /* Visual selection end */
-	int starty;
 } Cursor;
 
-typedef struct line_ {
-	struct line_ *next, *prev;
+typedef struct line {
+	struct line *next, *prev;
 	size_t length;
 	wchar_t data[];
 } Line;
 
-typedef struct buffer_ {
-	struct buffer_ *next, *prev;
+typedef struct buffer {
+	struct buffer *next, *prev;
 	char *path;
 	Line *lines, *curline;
 	Cursor cursor;
-	int linexoff;
+	int starty;
+	int offsetx;
 } Buffer;
 
 typedef struct {
@@ -65,21 +69,21 @@ typedef struct {
 	} arg;
 } Action;
 
-/* Internal functions */
 static int32_t min(int32_t, int32_t);
 static int32_t max(int32_t, int32_t);
 
 static void msighandler(int);
-static int  mnumplaces(int);
 
 static Buffer* mnewbuf();
 static void mfreebuf(Buffer*);
-static int  mreadbuf(Buffer*, const char*);
 static void mclearbuf(Buffer*);
+static int  mreadfile(Buffer*, const char*);
+static void mreadstr(Buffer*, const char*);
+
 static int  mnumlines(Buffer*);
 static int  mnumvislines(Line*);
-
 static void mupdatecursor();
+static void mcmdkey(wint_t);
 static void minsert(Buffer*, wint_t);
 static int  mindent(Line*, int);
 static void mfreeln(Line*);
@@ -87,7 +91,6 @@ static void msetln(Line*, const wchar_t*);
 static void mmove(Buffer*, int, int);
 static void mjump(Buffer*, Marker);
 static void mselect(Buffer*, int, int, int, int);
-
 static void mrepeat(const Action*, int);
 static void mruncmd(wchar_t*);
 
@@ -96,28 +99,25 @@ static void mpaintln(Buffer*, Line*, WINDOW*, int, int, bool);
 static void mpaintbuf(Buffer*, WINDOW*, bool);
 static void mpaintcmd();
 
-/* Bindable functions */
-static void repaint();
-static void handlemouse();
-static void quit();
-static void setmode(const Action*);
-static void save(const Action*);
-static void readfile(const Action*);
-static void readstr(const Action*);
-static void find(const Action*);
-
-static void command(const Action*);
-static void motion(const Action*);
-static void jump(const Action*);
-static void coc();
-static void pgup();
-static void pgdown();
-static void bufsel(const Action*);
-static void bufdel(const Action*);
-static void insert(const Action*);
-static void freeln();
-static void append();
-static void newln();
+BINDABLE (repaint);
+BINDABLE (handlemouse);
+BINDABLE (quit);
+BINDABLE (setmode);
+BINDABLE (save);
+BINDABLE (readfile);
+BINDABLE (readstr);
+BINDABLE (find);
+BINDABLE (motion);
+BINDABLE (jump);
+BINDABLE (coc);
+BINDABLE (pgup);
+BINDABLE (pgdown);
+BINDABLE (bufsel);
+BINDABLE (bufdel);
+BINDABLE (insert);
+BINDABLE (freeln);
+BINDABLE (append);
+BINDABLE (newln);
 
 /* Global variables */
 static Mode mode = MODE_NORMAL;
@@ -136,14 +136,14 @@ int main(int argc, char **argv) {
 
 	/* Init buffers */
 	cmdbuf = mnewbuf();
-	cmdbuf->linexoff = 0;
+	cmdbuf->offsetx = 0;
 	signal(SIGHUP,  msighandler);
 	signal(SIGKILL, msighandler);
 	signal(SIGINT,  msighandler);
 	signal(SIGTERM, msighandler);
 
 	for (i = 1; i < argc; ++i)
-		mreadbuf((curbuf = mnewbuf()), argv[i]);
+		mreadfile((curbuf = mnewbuf()), argv[i]);
 
 	if (!curbuf)
 		curbuf = mnewbuf();
@@ -151,15 +151,14 @@ int main(int argc, char **argv) {
 	/* Init curses */
 	newterm(NULL, stderr, stderr);
 	clear();
-	refresh();
 	noecho();
 	keypad(stdscr, TRUE);
-	nodelay(stdscr, FALSE);
-	notimeout(stdscr, TRUE);
+	notimeout(stdscr, FALSE);
+	set_escdelay(1);
 	use_default_colors();
 	mousemask(BUTTON1_CLICKED | REPORT_MOUSE_POSITION, NULL);
 
-	if ((use_colors = has_colors())) {
+	if (use_colors && (use_colors = has_colors())) {
 		start_color();
 		for (i = 1; i < NUM_COLOR_PAIRS; ++i)
 			init_pair(i, color_pairs[i][0], color_pairs[i][1]);
@@ -168,36 +167,27 @@ int main(int argc, char **argv) {
 	repaint();
 	for (;;) {
 		get_wch(&key);
-		if (key != ERR) {
+		if (key != (wint_t)ERR) {
 			switch (mode) {
 			case MODE_NORMAL:
 				/* Special keys will cancel action sequences */
 				if (key == ESC || key == '\n') {
 					repcnt = 0;
 				}
-
-				/* Number keys (other than 0) are reserved for repetition */
-				if (isdigit(key) && !(key == '0' && !repcnt)) {
-					repcnt = min(10 * repcnt + (key - '0'), max_cmd_repetition);
-				} else {
-					for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
-						if (key == buffer_actions[i].key) {
-							msetln(cmdbuf->curline, buffer_actions[i].cmd);
-							mrepeat(&buffer_actions[i], repcnt ? repcnt : 1);
-						}
-					}
-					repcnt = 0;
-				}
+				mcmdkey(key);
 				break;
 			case MODE_SELECT:
 				if (key == ESC) mode = MODE_NORMAL;
+				else mcmdkey(key);
 				break;
 			case MODE_INSERT:
 				if (key == ESC) mode = MODE_NORMAL;
 				else minsert(curbuf, key);
 				break;
 			case MODE_COMMAND:
-				if (key == ESC) mode = MODE_NORMAL;
+				if (key == ESC) {
+					mode = MODE_NORMAL;
+				}
 				else minsert(cmdbuf, key);
 				break;
 			}
@@ -227,26 +217,16 @@ void msighandler(int signum) {
 	}
 }
 
-int mnumplaces(int n) {
-	/* How many decimal places in a number? */
-	int r = n < 0 ? 2 : 1;
-	while (n > 9) {
-		n /= 10;
-		r++;
-	}
-	return r;
-}
-
 Buffer* mnewbuf() {
 	/* Create new buffer and insert at start of the list */
-	Buffer *next = NULL, *head, *cur;
+	Buffer *next = NULL;
 	if (buflist) next = buflist;
 	if (!(buflist = (Buffer*)calloc(1, sizeof(Buffer)))) return NULL;
 	buflist->next = next;
 	/* Every buffer has at least one line */
 	buflist->curline = buflist->lines = (Line*)calloc(sizeof(wchar_t), sizeof(Line)+default_linebuf_size);
 	buflist->curline->length = default_linebuf_size;
-	buflist->linexoff = 4; // TODO
+	buflist->offsetx = 4;
 	if (next) buflist->next->prev = buflist;
 	mselect(buflist, -1, -1, -1, -1);
 	return buflist;
@@ -255,14 +235,32 @@ Buffer* mnewbuf() {
 void mfreebuf(Buffer *buf) {
 	if (!buf) return;
 	free(buf->path);
+	mclearbuf(buf);
+	free(buf->lines);
 	if (buf->prev) buf->prev->next = buf->next;
 	if (buf->next) buf->next->prev = buf->prev;
 	if (curbuf == buf) curbuf = buf->next;
 }
 
-int mreadbuf(Buffer *buf, const char *path) {
+void mclearbuf(Buffer *buf) {
+	Line *ln;
+	if (!buf || !buf->lines) return;
+	ln = buf->lines->next;
+	while (ln) {
+		Line *next = ln->next;
+		free(ln);
+		ln = next;
+	}
+	buf->lines->next = NULL;
+	buf->cursor.c.x = buf->cursor.c.y = 0;
+	//msetln(buf->lines, L"");
+	buf->curline = buf->lines;
+}
+
+int mreadfile(Buffer *buf, const char *path) {
 	FILE *fp = NULL;
 
+	if (!buf || !path) return 0;
 	if (path[0] == '-' && !path[1]) {
 		fp = stdin;
 	} else {
@@ -292,13 +290,12 @@ int mreadbuf(Buffer *buf, const char *path) {
 	return 1;
 }
 
-void mclearbuf(Buffer *buf) {
-	Line *ln;
-	for (ln = buf->lines->next; ln; ln = ln->next)
-		free(ln);
-	ln = buf->curline = buf->lines;
-	ln->next = NULL;
-	ln->data[0] = 0;
+void mreadstr(Buffer *buf, const char *str) {
+	int i, len;
+	if (!buf || !str) return;
+	len = strlen(str);
+	for (i = 0; i < len; ++i)
+		minsert(buf, str[i]);
 }
 
 int mnumlines(Buffer *buf) {
@@ -316,37 +313,49 @@ int mnumlines(Buffer *buf) {
 int mnumvislines(Line *ln) {
 	/* How many 'visual lines' will be needed
 	 * in order to display the physical line? */
-	int len, row, col;
-	getmaxyx(bufwin, row, col);
+	int len, col;
+	col = getmaxx(bufwin);
 	len = wcslen(ln->data) + 4;
 	return col ? (len + col - 1) / col : 1;
 }
 
 void mupdatecursor() {
 	/* Place the cursor depending on the mode */
-	int row, col;
-	getmaxyx(stdscr, row, col);
-	if (mode == MODE_COMMAND) {
-		size_t len = wcslen(cmdbuf->curline->data);
-		move(row-1, len);
+	WINDOW *win = mode == MODE_COMMAND ? cmdwin : bufwin;
+	Buffer *buf = mode == MODE_COMMAND ? cmdbuf : curbuf;
+	Line *ln = buf->curline;
+	int i, ncols;
+
+	/* Count number of columns until cursor */
+	for (i = ncols = 0; i < buf->cursor.c.x; ++i) {
+		if (ln->data[i] == L'\t') ncols += tab_width;
+		else ncols += max(0, wcwidth(ln->data[i]));
+	}
+
+	wmove(win, buf->cursor.c.y - buf->starty, buf->offsetx + ncols);
+	wrefresh(win);
+}
+
+void mcmdkey(wint_t key) {
+	/* Number keys (other than 0) are reserved for repetition */
+	if (isdigit(key) && !(key == '0' && !repcnt)) {
+		repcnt = min(10 * repcnt + (key - '0'), max_cmd_repetition);
 	} else {
-		Line *ln;
-		int i, ntabs;
-
-		/* Count number of tabs until cursor */
-		if (!curbuf) return;
-		ln = curbuf->curline;
-		for (i = ntabs = 0; i < curbuf->cursor.c.x; ++i) {
-			if (ln->data[i] == L'\t') ntabs++;
+		int i;
+		for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
+			if (key == (wint_t)buffer_actions[i].key) {
+				mclearbuf(cmdbuf);
+				msetln(cmdbuf->curline, buffer_actions[i].cmd);
+				mjump(cmdbuf, MARKER_END);
+				mrepeat(&buffer_actions[i], repcnt ? repcnt : 1);
+			}
 		}
-
-		move(curbuf->cursor.c.y - curbuf->cursor.starty + 1,
-				 curbuf->cursor.c.x + curbuf->linexoff + ntabs * (tab_width-1));
+		repcnt = 0;
 	}
 }
 
 void minsert(Buffer *buf, wint_t key) {
-	int i, idx, len;
+	int idx, len;
 	Line *ln;
 
 	if (!buf || !(ln = buf->curline)) return;
@@ -355,13 +364,15 @@ void minsert(Buffer *buf, wint_t key) {
 	len = (wcslen(ln->data)+1) * sizeof(wchar_t);
 
 	switch (key) {
+	case '\b':
+	case 127:
 	case KEY_BACKSPACE:
 		if (idx) {
 			memcpy(ln->data+idx-1, ln->data+idx, len);
 			buf->cursor.c.x--;
 		} else if (ln->prev) {
 			int plen = wcslen(ln->prev->data);
-			memcpy(ln->prev->data+plen, ln->data, len);
+			wcscpy(ln->prev->data+plen, ln->data);
 			mmove(buf, plen + buf->cursor.c.x, -1);
 			buf->curline = ln->prev;
 			mfreeln(ln);
@@ -377,8 +388,7 @@ void minsert(Buffer *buf, wint_t key) {
 			} else {
 				int ox = 0;
 				Line *old = ln;
-
-		 		ln = (Line*)calloc(sizeof(wchar_t), sizeof(Line)+default_linebuf_size);
+		 		ln = (Line*)calloc(sizeof(wchar_t), sizeof(Line) + default_linebuf_size);
 				ln->next = old->next;
 				ln->prev = old;
 				if (old->next) old->next->prev = ln;
@@ -443,9 +453,9 @@ void msetln(Line *ln, const wchar_t *data) {
 
 void mmove(Buffer *buf, int x, int y) {
 	int i, len;
-	int row, col;
+	int row;
 
-	getmaxyx(bufwin, row, col);
+	row = getmaxy(bufwin);
 
 	/* left / right */
 	buf->cursor.c.x += x;
@@ -457,9 +467,9 @@ void mmove(Buffer *buf, int x, int y) {
 				buf->curline = buf->curline->prev;
 				buf->cursor.c.y--;
 			} else break;
-			if (buf->cursor.c.y < buf->cursor.starty) {
+			if (buf->cursor.c.y < buf->starty) {
 				/* Scroll the view up */
-				buf->cursor.starty -= mnumvislines(buf->curline);
+				buf->starty -= mnumvislines(buf->curline);
 			}
 		}
 	} else {
@@ -468,9 +478,9 @@ void mmove(Buffer *buf, int x, int y) {
 				buf->curline = buf->curline->next;
 				buf->cursor.c.y++;
 			} else break;
-			if (buf->cursor.c.y - buf->cursor.starty >= row) {
+			if (buf->cursor.c.y - buf->starty >= row) {
 				/* Scroll the view down */
-				buf->cursor.starty += mnumvislines(buf->curline);
+				buf->starty += mnumvislines(buf->curline);
 			}
 		}
 	}
@@ -478,31 +488,38 @@ void mmove(Buffer *buf, int x, int y) {
 	/* Restrict cursor to line content */
 	len = wcslen(buf->curline->data);
 	buf->cursor.c.x = max(min(buf->cursor.c.x, len), 0);
+
+	/* Update selection end */
+	if (mode == MODE_SELECT) {
+		buf->cursor.v1 = (Coord){buf->cursor.c.x, buf->cursor.c.y};
+	}
 }
 
 void mjump(Buffer *buf, Marker mark) {
 	switch(mark) {
 	case MARKER_START:
-		curbuf->cursor.c.x = 0;
+		buf->cursor.c.x = 0;
 		break;
 	case MARKER_MIDDLE:
 		{
-			Line *ln = curbuf->curline;
+			Line *ln = buf->curline;
 			size_t len = wcslen(ln->data);
-			curbuf->cursor.c.x = (len/2);
+			buf->cursor.c.x = (len/2);
 		}
 		break;
 	case MARKER_END:
 		{
-			Line *ln = curbuf->curline;
+			Line *ln = buf->curline;
 			size_t len = wcslen(ln->data);
-			curbuf->cursor.c.x = max(len, 0);
+			buf->cursor.c.x = max(len, 0);
 		}
 		break;
 	}
 }
 
 void mselect(Buffer *buf, int x1, int y1, int x2, int y2) {
+	buf->cursor.v0 = (Coord){ x1, y1 };
+	buf->cursor.v1 = (Coord){ x2, y2 };
 }
 
 void mrepeat(const Action *ac, int n) {
@@ -512,7 +529,7 @@ void mrepeat(const Action *ac, int n) {
 		ac->fn(ac);
 }
 
-int findchr(wchar_t *buf, int start, wchar_t c) {
+int mfindchr(wchar_t *buf, int start, wchar_t c) {
 	int i, len;
 	len = wcslen(buf);
 	for (i = start; i < len; ++i) {
@@ -540,9 +557,8 @@ char* mexec(const char *cmd) {
 		system(cmd);
 		exit(0);
 	} else {
-		int n;
 		close(pipes[1]);
-		n = read(pipes[0], buf, sizeof(buf));
+		read(pipes[0], buf, sizeof(buf));
 		return buf;
 	}
 
@@ -560,7 +576,8 @@ void mruncmd(wchar_t *buf) {
 
 	/* Find length of command */
 	exlen = wcslen(cmd);
-	if ((cmdlen = findchr(cmd, 0, L' ')) < 0) {
+	if (!exlen) return;
+	if ((cmdlen = mfindchr(cmd, 0, L' ')) < 0) {
 		cmdlen = exlen;
 	}
 
@@ -571,39 +588,63 @@ void mruncmd(wchar_t *buf) {
 		wcsrtombs(arg, &warg, (exlen - cmdlen) * 4, NULL);
 	}
 
-	for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
-		if (buffer_actions[i].cmd) {
-			/* Check for valid command */
-			if (/* Either the single-char keyboard shortcut... */
-			    (cmdlen == 1 && buffer_actions[i].key == cmd[0])
-			    /* ...or the full command */
-			    || !wcsncmp(buffer_actions[i].cmd, cmd, cmdlen)) {
-				Action ac;
-				memcpy(&ac, &buffer_actions[i], sizeof(Action));
-				if (arg) {
-					/* Check for shell command */
-					if (arg[0] == '!')
-						ac.arg.v = mexec(arg+1);
-					else
-						ac.arg.v = arg;
+	/* Is it a shell command? */
+	if (cmd[0] == L'!') {
+		/* Run command */
+		const wchar_t *wcmd = cmd+1;
+		char *acmd = (char*)malloc(cmdlen * 4);
+		wcsrtombs(acmd, &wcmd, cmdlen * 4, NULL);
+		char *out = mexec(acmd);
+		free(acmd);
+
+		/* Print command output */
+		mode = MODE_INSERT;
+		mreadstr(cmdbuf, "\n");
+		mreadstr(cmdbuf, out);
+		mode = MODE_COMMAND;
+	} else {
+		/* Is it a builtin command? */
+		for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
+			if (buffer_actions[i].cmd) {
+				/* Check for valid command */
+				if (/* Either the single-char keyboard shortcut... */
+				    (cmdlen == 1 && buffer_actions[i].key == cmd[0])
+				    /* ...or the full command */
+				    || !wcsncmp(buffer_actions[i].cmd, cmd, cmdlen)) {
+					Action ac;
+					memcpy(&ac, &buffer_actions[i], sizeof(Action));
+					if (arg) {
+						/* Check for shell command */
+						if (arg[0] == '!')
+							ac.arg.v = mexec(arg+1);
+						else
+							ac.arg.v = arg;
+					}
+
+					/* FIXME: This is an ugly hack */
+					bool indent = auto_indent;
+					auto_indent = FALSE;
+					mode = MODE_INSERT;
+					mrepeat(&ac, cnt);
+					mode = MODE_COMMAND;
+					auto_indent = indent;
+					/* TODO: Parse next command in chain */
 				}
-				mode = MODE_INSERT;
-				mrepeat(&ac, cnt);
-				mode = MODE_COMMAND;
 			}
 		}
 	}
 
 	free(arg);
 }
+
 void mpaintstat() {
 	Buffer *cur = buflist;
-	int row, col, nlines, bufsize;
+	int col, nlines, bufsize;
 	char textbuf[32];
 	char *bufname = "~scratch~";
 	const char *modes[] = { "NORMAL", "INSERT", "SELECT", "COMMAND" };
 
-	getmaxyx(stdscr, row, col);
+	col = getmaxx(stdscr);
 	if (use_colors) wattron(statuswin, COLOR_PAIR(PAIR_STATUS_BAR));
 
 	/* Background */
@@ -617,22 +658,23 @@ void mpaintstat() {
 	wprintw(statuswin, "%s, %i lines", bufname, nlines);
 
 	/* Mode, cursor pos */
+	cur = mode == MODE_COMMAND ? cmdbuf : buflist;
 	bufsize = snprintf(textbuf, sizeof(textbuf), "%s %d:%d", modes[mode], cur ? cur->cursor.c.y : 0, cur ? cur->cursor.c.x : 0);
 	if (use_colors) wattron(statuswin, COLOR_PAIR(PAIR_STATUS_HIGHLIGHT));
 	mvwprintw(statuswin, 0, col - bufsize, "%s", textbuf);
 	if (use_colors) wattroff(statuswin, COLOR_PAIR(PAIR_STATUS_HIGHLIGHT));
 
 	if (use_colors) wattroff(statuswin, COLOR_PAIR(PAIR_STATUS_BAR));
+	wrefresh(statuswin);
 }
 
 void mpaintln(Buffer *buf, Line *ln, WINDOW *win, int y, int n, bool numbers) {
-	/* Returns number of 'visual lines' painted */
 	int x, len;
 	int i, j;
-	int row, col;
+	int col;
 
-	getmaxyx(win, row, col);
-	x = buf->linexoff;
+	col = getmaxx(win);
+	x = buf->offsetx;
 	len = wcslen(ln->data);
 
 	if (use_colors) wattron(win, COLOR_PAIR(PAIR_LINE_NUMBERS));
@@ -641,48 +683,64 @@ void mpaintln(Buffer *buf, Line *ln, WINDOW *win, int y, int n, bool numbers) {
 
 	for (i = 0; i < len; ++i) {
 		wchar_t c = ln->data[i];
+		int abs_y = y + buf->starty;
+		int abs_x = x - buf->offsetx;
 
 		/* When we hit the right edge of the screen,
 		 * we wrap to the beginning of the next line */
 		if (x >= col) {
-			x = buf->linexoff;
+			x = buf->offsetx;
 			y++;
 		}
 
+		/* Highlight the current selection */
+		Coord sel_start = buf->cursor.v0;
+		Coord sel_end = buf->cursor.v1;
+		if (sel_end.x < sel_start.x) SWAP(sel_start.x, sel_end.x, int);
+		if (sel_end.y < sel_start.y) SWAP(sel_start.y, sel_end.y, int);
+		if (abs_y >= sel_start.y &&
+				abs_y <= sel_end.y &&
+				abs_x >= sel_start.x &&
+				abs_x <= sel_end.x) {
+			wattron(win, COLOR_PAIR(PAIR_BUFFER_CONTENTS));
+		}
+
 		switch (c) {
-		case L'\0':
-		case L'\n':
-		case L'\t':
-		{
-			for (j = 0; j < tab_width; ++j) {
+			case L'\0':
+			case L'\n':
+			case L'\t':
+			{
 				cchar_t cc;
-				c = L' ';
+				c = tab_beginning; setcchar(&cc, &c, 0, 0, 0);
+				mvwadd_wch(win, y, x++, &cc);
+				c = tab_character; setcchar(&cc, &c, 0, 0, 0);
+				for (j = 0; j < (int)tab_width-1; ++j) {
+					mvwadd_wch(win, y, x, &cc);
+					x++;
+				}
+			}
+			break;
+			default:
+			{
+				cchar_t cc;
 				setcchar(&cc, &c, 0, 0, 0);
 				mvwadd_wch(win, y, x, &cc);
 				x++;
 			}
+			break;
 		}
-		break;
-		default:
-		{
-			cchar_t cc;
-			setcchar(&cc, &c, 0, 0, 0);
-			mvwadd_wch(win, y, x, &cc);
-			x++;
-		}
-		break;
-		}
+		wattroff(win, COLOR_PAIR(PAIR_BUFFER_CONTENTS));
 	}
 }
 
 void mpaintbuf(Buffer *buf, WINDOW *win, bool numbers) {
 	int i, l, cp;
-	int row, col;
+	int row;
 	Line *ln;
 
 	if (!buf || !bufwin) return;
-	getmaxyx(win, row, col);
-	cp = buf->cursor.c.y - buf->cursor.starty;
+	row = getmaxy(win);
+	cp = buf->cursor.c.y - buf->starty;
 
 	/* Paint from the cursor to the bottom */
 	for (i = cp, l = 0, ln = buf->curline; i < row && ln; ++l, ln = ln->next) {
@@ -699,10 +757,10 @@ void mpaintbuf(Buffer *buf, WINDOW *win, bool numbers) {
 
 void mpaintcmd() {
 	int bufsize;
-	int row, col;
+	int col;
 	char textbuf[32];
 
-	getmaxyx(cmdwin, row, col);
+	col = getmaxx(cmdwin);
 
 	if (use_colors) wattron(cmdwin, COLOR_PAIR(PAIR_STATUS_HIGHLIGHT));
 
@@ -717,21 +775,21 @@ void mpaintcmd() {
 }
 
 void repaint() {
-	int row, col;
+	int row, col, nlines;
 	getmaxyx(stdscr, row, col);
+	nlines = mnumlines(cmdbuf);
 	delwin(statuswin);
 	delwin(cmdwin);
 	delwin(bufwin);
 	statuswin = newwin(1, col, 0, 0);
-	bufwin = newwin(row-2, col, 1, 0);
-	cmdwin = newwin(1, col, row-1, 0);
+	bufwin = newwin(row-nlines-1, col, 1, 0);
+	cmdwin = newwin(nlines, col, row-nlines, 0);
+	refresh();
 	mpaintstat();
 	mpaintcmd();
+	if (always_centered) coc();
 	mpaintbuf(curbuf, bufwin, true);
 	mupdatecursor();
-	wrefresh(statuswin);
-	wrefresh(cmdwin);
-	wrefresh(bufwin);
 }
 
 void handlemouse() {
@@ -741,8 +799,8 @@ void handlemouse() {
 			/* Jump to mouse location */
 			int x = ev.x, y = ev.y;
 			wmouse_trafo(bufwin, &y, &x, FALSE);
-			x -= curbuf->linexoff;
-			y -= curbuf->cursor.c.y + curbuf->cursor.starty;
+			x -= curbuf->cursor.c.x + curbuf->offsetx + 1;
+			y -= curbuf->cursor.c.y + curbuf->starty;
 			mmove(curbuf, x, y);
 		}
 	}
@@ -772,10 +830,7 @@ void save(const Action *ac) {
 	FILE *src, *bak;
 	Line *ln;
 
-	if (!ac->arg.v && !curbuf->path) {
-		return;
-	}
-
+	if (!ac->arg.v && !curbuf->path) return;
 	if (backup_on_write
 			&& (bak = fopen(backup_path, "w+"))
 			&& (src = fopen(curbuf->path, "r"))) {
@@ -786,60 +841,62 @@ void save(const Action *ac) {
 		fclose(bak);
 		fclose(src);
 	}
-
 	if (!(src = fopen(ac->arg.v ? ac->arg.v : curbuf->path, "w+"))) return;
 	for (ln = curbuf->lines; ln; ln = ln->next) {
 		fputws(ln->data, src);
-		fputws(L"\n", src);
+		if (ln->next) fputws(L"\n", src);
 	}
 
 	fclose(src);
 }
 
 void readfile(const Action *ac) {
-	if (ac->arg.v) mreadbuf((curbuf = mnewbuf()), ac->arg.v);
+	mreadfile((curbuf = mnewbuf()), ac->arg.v);
 }
 
 void readstr(const Action *ac) {
-	if (ac->arg.v) {
-		int i, len = strlen(ac->arg.v);
-		for (i = 0; i < len; ++i)
-			minsert(curbuf, ((char*)ac->arg.v)[i]);
-	}
+	mreadstr(curbuf, (char*)ac->arg.v);
 }
 
 void find(const Action *ac) {
 	if (ac->arg.v) {
 		char msgbuf[100];
 		regex_t reg;
-		Line *ln;
-		int i, y;
+		Line *ln, *prev_ln = curbuf->curline;
+		int i, x, y = 0, wrapped = 0;
 
 		if ((i = regcomp(&reg, ac->arg.v, 0))) {
 			regerror(i, &reg, msgbuf, sizeof(msgbuf));
 			return;
 		}
 
-		y = curbuf->cursor.c.y + curbuf->cursor.starty;
 		for (ln = curbuf->curline; ln; ln = ln->next, ++y) {
+			int offset = curbuf->cursor.c.x * sizeof(wchar_t);
 			char buf[default_linebuf_size * 4];
-			const wchar_t *wdat = ln->data;
+			const wchar_t *wdat = ln->data + offset;
 			regmatch_t match;
 
 			wcsrtombs(buf, &wdat, sizeof(buf), NULL);
 			i = regexec(&reg, buf, 1, &match, 0);
+			x = match.rm_so - curbuf->cursor.c.x + offset;
 			if (!i) {
-				/* Jump to location */
-				mmove(curbuf, 0, y);
-				break;
+				/* Jump to location, select match */
+				mmove(curbuf, x, y);
+				//mselect(curbuf, x, y, match.rm_eo - 1, y);
+				regfree(&reg);
+				return;
+			}
+			if (!ln->next && !wrapped) {
+				/* Wrap to beginning of buffer, but only once */
+				ln = curbuf->curline = curbuf->lines;
+				y = 0;
+				wrapped = 1;
 			}
 		}
+		/* If we didn't find a match, do nothing */
+		curbuf->curline = prev_ln;
 		regfree(&reg);
 	}
-}
-
-void command(const Action *ac) {
-	if (ac->arg.v) mruncmd((wchar_t*)ac->arg.v);
 }
 
 void motion(const Action *ac) {
@@ -852,20 +909,17 @@ void jump(const Action *ac) {
 
 void coc() {
 	/* Center on cursor */
-	int row, col;
-	getmaxyx(bufwin, row, col);
-	curbuf->cursor.starty = -(row / 2 - curbuf->cursor.c.y);
+	int row = getmaxy(bufwin);
+	curbuf->starty = -(row / 2 - curbuf->cursor.c.y);
 }
 
 void pgup() {
-	int row, col;
-	getmaxyx(bufwin, row, col);
+	int row = getmaxy(bufwin);
 	mmove(curbuf, 0, -row);
 }
 
 void pgdown() {
-	int row, col;
-	getmaxyx(bufwin, row, col);
+	int row = getmaxy(bufwin);
 	mmove(curbuf, 0, +row);
 }
 

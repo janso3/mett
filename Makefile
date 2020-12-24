@@ -1,6 +1,6 @@
 INCS =
 LIBS = -lncursesw -lm
-CFLAGS = $(INCS) -g -O2 -std=c11 -pedantic-errors
+CFLAGS = $(INCS) -g -O2 -std=c11 -Wall -Wextra -pedantic-errors
 LDFLAGS = $(LIBS)
 
 PREFIX = /usr/local
@@ -12,6 +12,7 @@ OBJ = mett.o
 
 mett: $(OBJ)
 	$(CC) $(LDFLAGS) -o $@ $(OBJ)
+	strip $@
 
 clean:
 	rm -f mett $(OBJ)
