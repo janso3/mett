@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #include <wchar.h>
 #include <wctype.h>
@@ -82,6 +83,7 @@ static void mreadstr(Buffer*, const char*);
 
 static int  mnumlines(Buffer*);
 static int  mnumvislines(Line*);
+static int  mnumcols(Line*, int );
 static void mupdatecursor();
 static void mcmdkey(wint_t);
 static void minsert(Buffer*, wint_t);
@@ -99,6 +101,7 @@ static void mpaintln(Buffer*, Line*, WINDOW*, int, int, bool);
 static void mpaintbuf(Buffer*, WINDOW*, bool);
 static void mpaintcmd();
 
+BINDABLE (resize);
 BINDABLE (repaint);
 BINDABLE (handlemouse);
 BINDABLE (quit);
@@ -132,6 +135,10 @@ int main(int argc, char **argv) {
 	int i;
 	wint_t key;
 
+	/* Hack: When spawned in a new terminal window, ncurses will
+	 * sometimes report the wrong screen dimension when calling
+	 * getmaxyx() too quickly.*/
+	usleep(10000);
 	setlocale(LC_ALL, "");
 
 	/* Init buffers */
@@ -164,7 +171,9 @@ int main(int argc, char **argv) {
 			init_pair(i, color_pairs[i][0], color_pairs[i][1]);
 	}
 
+	resize();
 	repaint();
+
 	for (;;) {
 		get_wch(&key);
 		if (key != (wint_t)ERR) {
@@ -187,6 +196,8 @@ int main(int argc, char **argv) {
 			case MODE_COMMAND:
 				if (key == ESC) {
 					mode = MODE_NORMAL;
+					mclearbuf(cmdbuf);
+					resize();
 				}
 				else minsert(cmdbuf, key);
 				break;
@@ -253,7 +264,6 @@ void mclearbuf(Buffer *buf) {
 	}
 	buf->lines->next = NULL;
 	buf->cursor.c.x = buf->cursor.c.y = 0;
-	//msetln(buf->lines, L"");
 	buf->curline = buf->lines;
 }
 
@@ -319,19 +329,21 @@ int mnumvislines(Line *ln) {
 	return col ? (len + col - 1) / col : 1;
 }
 
+int mnumcols(Line *ln, int end) {
+	/* Count number of columns until cursor */
+	int i, ncols;
+	for (i = ncols = 0; i < end; ++i) {
+		if (ln->data[i] == L'\t') ncols += tab_width;
+		else ncols += max(0, wcwidth(ln->data[i]));
+	}
+	return ncols;
+}
+
 void mupdatecursor() {
 	/* Place the cursor depending on the mode */
 	WINDOW *win = mode == MODE_COMMAND ? cmdwin : bufwin;
 	Buffer *buf = mode == MODE_COMMAND ? cmdbuf : curbuf;
-	Line *ln = buf->curline;
-	int i, ncols;
-
-	/* Count number of columns until cursor */
-	for (i = ncols = 0; i < buf->cursor.c.x; ++i) {
-		if (ln->data[i] == L'\t') ncols += tab_width;
-		else ncols += max(0, wcwidth(ln->data[i]));
-	}
-
+	int ncols = mnumcols(buf->curline, buf->cursor.c.x);
 	wmove(win, buf->cursor.c.y - buf->starty, buf->offsetx + ncols);
 	wrefresh(win);
 }
@@ -344,7 +356,6 @@ void mcmdkey(wint_t key) {
 		int i;
 		for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
 			if (key == (wint_t)buffer_actions[i].key) {
-				mclearbuf(cmdbuf);
 				msetln(cmdbuf->curline, buffer_actions[i].cmd);
 				mjump(cmdbuf, MARKER_END);
 				mrepeat(&buffer_actions[i], repcnt ? repcnt : 1);
@@ -408,8 +419,7 @@ void minsert(Buffer *buf, wint_t key) {
 				memcpy(ln->data+ox, old->data+idx, len);
 				old->data[idx] = 0;
 				mjump(buf, MARKER_START);
-				mmove(buf, 0, 1);
-				buf->cursor.c.x = ox;
+				mmove(buf, ox, +1);
 			}
 		}
 		break;
@@ -424,15 +434,15 @@ void minsert(Buffer *buf, wint_t key) {
 }
 
 int mindent(Line *ln, int n) {
-	int i, tabs, spaces;
+	int i, j, tabs, spaces;
 
 	tabs = n / tab_width;
 	spaces = n % tab_width;
 
 	for (i = 0; i < tabs; ++i)
 		ln->data[i] = L'\t';
-	for (; i < spaces; ++i)
-		ln->data[i] = L' ';
+	for (j = 0; j < spaces; ++j)
+		ln->data[i+j] = L' ';
 
 	return tabs + spaces;
 }
@@ -602,6 +612,8 @@ void mruncmd(wchar_t *buf) {
 		mreadstr(cmdbuf, "\n");
 		mreadstr(cmdbuf, out);
 		mode = MODE_COMMAND;
+
+		resize();
 	} else {
 		/* Is it a builtin command? */
 		for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
@@ -615,10 +627,8 @@ void mruncmd(wchar_t *buf) {
 					memcpy(&ac, &buffer_actions[i], sizeof(Action));
 					if (arg) {
 						/* Check for shell command */
-						if (arg[0] == '!')
-							ac.arg.v = mexec(arg+1);
-						else
-							ac.arg.v = arg;
+						if (arg[0] == '!') ac.arg.v = mexec(arg+1);
+						else ac.arg.v = arg;
 					}
 
 					/* FIXME: This is an ugly hack */
@@ -753,6 +763,7 @@ void mpaintbuf(Buffer *buf, WINDOW *win, bool numbers) {
 		mpaintln(buf, ln, win, i, l, numbers);
 		i -= ln->prev ? mnumvislines(ln->prev) : 1;
 	}
+	wrefresh(win);
 }
 
 void mpaintcmd() {
@@ -772,18 +783,25 @@ void mpaintcmd() {
 	mvwprintw(cmdwin, 0, col - bufsize, "%s", textbuf);
 
 	if (use_colors) wattroff(cmdwin, COLOR_PAIR(PAIR_STATUS_HIGHLIGHT));
+	wrefresh(cmdwin);
 }
 
-void repaint() {
+void resize() {
 	int row, col, nlines;
 	getmaxyx(stdscr, row, col);
 	nlines = mnumlines(cmdbuf);
-	delwin(statuswin);
-	delwin(cmdwin);
-	delwin(bufwin);
+	if (statuswin) delwin(statuswin);
+	if (cmdwin) delwin(cmdwin);
+	if (bufwin) delwin(bufwin);
 	statuswin = newwin(1, col, 0, 0);
 	bufwin = newwin(row-nlines-1, col, 1, 0);
 	cmdwin = newwin(nlines, col, row-nlines, 0);
+}
+
+void repaint() {
+	werase(statuswin);
+	werase(bufwin);
+	werase(cmdwin);
 	refresh();
 	mpaintstat();
 	mpaintcmd();
@@ -871,18 +889,20 @@ void find(const Action *ac) {
 		}
 
 		for (ln = curbuf->curline; ln; ln = ln->next, ++y) {
-			int offset = curbuf->cursor.c.x * sizeof(wchar_t);
+			int lineoff = curbuf->cursor.c.x * sizeof(wchar_t);
 			char buf[default_linebuf_size * 4];
-			const wchar_t *wdat = ln->data + offset;
+			const wchar_t *wdat = ln->data + lineoff;
 			regmatch_t match;
 
 			wcsrtombs(buf, &wdat, sizeof(buf), NULL);
 			i = regexec(&reg, buf, 1, &match, 0);
-			x = match.rm_so - curbuf->cursor.c.x + offset;
+			x = match.rm_so - curbuf->cursor.c.x + lineoff;
 			if (!i) {
 				/* Jump to location, select match */
+				int mx = x + curbuf->cursor.c.x;
+				int my = y + curbuf->cursor.c.y - curbuf->starty;
 				mmove(curbuf, x, y);
-				//mselect(curbuf, x, y, match.rm_eo - 1, y);
+				mselect(curbuf, mx, my, mx + match.rm_eo - match.rm_so - 1, my);
 				regfree(&reg);
 				return;
 			}

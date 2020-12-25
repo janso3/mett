@@ -70,9 +70,9 @@ const Action buffer_actions[] = {
 
 	/* Buffer modification */
 	{  L"bs",       0,             insert,      { .i = KEY_BACKSPACE } },
-	{  L"dl",       'x',           insert,      { .i = KEY_DC } },
-	{  L"dlln",     'Z',           freeln,      {{ 0 }} },
-	{  L"dl",       KEY_DC,        insert,      { .i = KEY_DC } },
+	{  L"del",      'x',           insert,      { .i = KEY_DC } },
+	{  L"delln",    'Z',           freeln,      {{ 0 }} },
+	{  L"del",      KEY_DC,        insert,      { .i = KEY_DC } },
 	{  L"append",   L'A',          append,      {{ 0 }} },
 	{  L"newln",    L'o',          newln,       {{ 0 }} },
 
@@ -80,7 +80,7 @@ const Action buffer_actions[] = {
 	{  L"quit",     L'q',          quit,        {{ 0 }} },
 	{  L"exit",     0,             quit,        {{ 0 }} },
 	{  NULL,        KEY_MOUSE,     handlemouse, {{ 0 }} },
-	{  L"repaint",  KEY_RESIZE,    repaint,     {{ 0 }} },
+	{  L"resize",   KEY_RESIZE,    resize,      {{ 0 }} },
 };
 
 static bool use_colors = true;
