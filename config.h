@@ -55,6 +55,7 @@ const Action buffer_actions[] = {
 	{  L"edit",     L'e',          readfile,    {{ 0 }} },
 	{  L"read",     L'r',          readstr,     {{ 0 }} },
 	{  L"find",     L'f',          find,        {{ 0 }} },
+	{  L"lsb",      0,             listbuffers, {{ 0 }} },
 
 	/* Mode switching */
 	{  NULL,        ESC,           setmode,     { .i = MODE_NORMAL } },
@@ -91,17 +92,17 @@ static bool auto_indent = true;
 static bool always_centered = false;
 
 /* Maximum line size in bytes until reallocation */
-const unsigned default_linebuf_size = 128*4;
+static const unsigned default_linebuf_size = 128*4;
 
-const unsigned tab_width = 4;
+static const unsigned tab_width = 4;
 
 /* These control the tab visualisation */
-const wchar_t tab_beginning = L'→';
-const wchar_t tab_character = L' ';
+static const wchar_t tab_beginning = L'→';
+static const wchar_t tab_character = L' ';
 
 /* Copy buffer to backup_path before overwriting file */
-const bool backup_on_write = true;
-const char *backup_path = "/tmp/.mett-backup";
+static const bool backup_on_write = true;
+static const char *backup_path = "/tmp/.mett-backup";
 
 /* Maximum number of times a command can be repeated */
-const unsigned max_cmd_repetition = 65536;
+static const unsigned max_cmd_repetition = 65536;

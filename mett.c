@@ -56,6 +56,7 @@ typedef struct buffer {
 	Cursor cursor;
 	int starty;
 	int offsetx;
+	int numlines;
 } Buffer;
 
 typedef struct {
@@ -110,6 +111,7 @@ BINDABLE (save);
 BINDABLE (readfile);
 BINDABLE (readstr);
 BINDABLE (find);
+BINDABLE (listbuffers);
 BINDABLE (motion);
 BINDABLE (jump);
 BINDABLE (coc);
@@ -294,6 +296,7 @@ int mreadfile(Buffer *buf, const char *path) {
 	}
 
 	buf->path = (char*)calloc(1, strlen(path)+1);
+	buf->numlines = mnumlines(buf);
 	strcpy(buf->path, path);
 	if (fp) fclose(fp);
 
@@ -431,6 +434,8 @@ void minsert(Buffer *buf, wint_t key) {
 		}
 		break;
 	}
+
+	buf->numlines = mnumlines(buf);
 }
 
 int mindent(Line *ln, int n) {
@@ -550,9 +555,9 @@ int mfindchr(wchar_t *buf, int start, wchar_t c) {
 
 char* mexec(const char *cmd) {
 	/* Execute cmd and return stdout */
-  static char buf[1024 * 64];
+	static char buf[1024 * 64];
 	int pipes[2];
-  pid_t pid;
+	pid_t pid;
 
 	if (pipe(pipes) == -1)
 		return NULL;
@@ -663,7 +668,7 @@ void mpaintstat() {
 	/* Buffer name, buffer length */
 	if (use_colors) wattron(statuswin, COLOR_PAIR(PAIR_STATUS_BAR));
 
-	nlines = mnumlines(curbuf);
+	nlines = curbuf->numlines;
 	if (curbuf && curbuf->path) bufname = curbuf->path;
 	wprintw(statuswin, "%s, %i lines", bufname, nlines);
 
@@ -917,6 +922,22 @@ void find(const Action *ac) {
 		curbuf->curline = prev_ln;
 		regfree(&reg);
 	}
+}
+
+void listbuffers() {
+	Buffer *buf = buflist;
+	int i = 0;
+	do {
+		char str[64];
+		snprintf(
+			str,
+			sizeof(str),
+			buf == curbuf ? "\n*%d %s" : "\n %d %s",
+			i, buf->path);
+		mreadstr(cmdbuf, str);
+		i++;
+	} while((buf = buf->next));
+	resize();
 }
 
 void motion(const Action *ac) {
