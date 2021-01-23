@@ -1,3 +1,4 @@
+#define VERSION_STRING ">Mett v0.1\n"
 #define ESC 27
 #define CTRL(x) ((x) & 0x1F)
 #define COLOR_BG -1
@@ -52,6 +53,7 @@ const Action buffer_actions[] = {
 	{  L"bn",       CTRL('n'),     bufsel,      { .i = +1 } },
 	{  L"bp",       CTRL('p'),     bufsel,      { .i = -1 } },
 	{  L"bd",       CTRL('x'),     bufdel,      { .i = 0 } },
+	{  L"cls",      0,             cls,         {{ 0 }} },
 	{  L"edit",     L'e',          readfile,    {{ 0 }} },
 	{  L"read",     L'r',          readstr,     {{ 0 }} },
 	{  L"find",     L'f',          find,        {{ 0 }} },
@@ -78,6 +80,8 @@ const Action buffer_actions[] = {
 	{  L"newln",    L'o',          newln,       {{ 0 }} },
 
 	/* Misc */
+	{  L"print",    0,             print,       {{ 0 }} },
+	{  L"about",    0,             print,       { .v = (void*)VERSION_STRING } },
 	{  L"quit",     L'q',          quit,        {{ 0 }} },
 	{  L"exit",     0,             quit,        {{ 0 }} },
 	{  NULL,        KEY_MOUSE,     handlemouse, {{ 0 }} },

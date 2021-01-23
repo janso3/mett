@@ -110,6 +110,7 @@ BINDABLE (setmode);
 BINDABLE (save);
 BINDABLE (readfile);
 BINDABLE (readstr);
+BINDABLE (print);
 BINDABLE (find);
 BINDABLE (listbuffers);
 BINDABLE (motion);
@@ -117,6 +118,7 @@ BINDABLE (jump);
 BINDABLE (coc);
 BINDABLE (pgup);
 BINDABLE (pgdown);
+BINDABLE (cls);
 BINDABLE (bufsel);
 BINDABLE (bufdel);
 BINDABLE (insert);
@@ -139,7 +141,7 @@ int main(int argc, char **argv) {
 
 	/* Hack: When spawned in a new terminal window, ncurses will
 	 * sometimes report the wrong screen dimension when calling
-	 * getmaxyx() too quickly.*/
+	 * getmaxyx() too soon.*/
 	usleep(10000);
 	setlocale(LC_ALL, "");
 
@@ -264,6 +266,7 @@ void mclearbuf(Buffer *buf) {
 		free(ln);
 		ln = next;
 	}
+	buf->lines->data[0] = 0;
 	buf->lines->next = NULL;
 	buf->cursor.c.x = buf->cursor.c.y = 0;
 	buf->curline = buf->lines;
@@ -304,11 +307,13 @@ int mreadfile(Buffer *buf, const char *path) {
 }
 
 void mreadstr(Buffer *buf, const char *str) {
-	int i, len;
+	int i, len, m = mode;
 	if (!buf || !str) return;
 	len = strlen(str);
+	mode = MODE_INSERT;
 	for (i = 0; i < len; ++i)
 		minsert(buf, str[i]);
+	mode = m;
 }
 
 int mnumlines(Buffer *buf) {
@@ -397,32 +402,33 @@ void minsert(Buffer *buf, wint_t key) {
 		break;
 	case '\n':
 		{
-			if (mode == MODE_COMMAND) {
-				mruncmd(cmdbuf->curline->data);
-			} else {
-				int ox = 0;
-				Line *old = ln;
-		 		ln = (Line*)calloc(sizeof(wchar_t), sizeof(Line) + default_linebuf_size);
-				ln->next = old->next;
-				ln->prev = old;
-				if (old->next) old->next->prev = ln;
-				old->next = ln;
+			int ox = 0;
+			Line *old = ln;
+			ln = (Line*)calloc(sizeof(wchar_t), sizeof(Line) + default_linebuf_size);
+			ln->next = old->next;
+			ln->prev = old;
+			if (old->next) old->next->prev = ln;
+			old->next = ln;
 
-				if (auto_indent) {
-					/* Indent to the last position */
-					int x, mx;
-					for (x = mx = 0; x < idx; ++x) {
-						if (old->data[x] == L'\t') mx += tab_width;
-						else if (iswspace(old->data[x])) mx++;
-						else break;
-					}
-					ox = mindent(ln, mx);
+			if (auto_indent) {
+				/* Indent to the last position */
+				int x, mx;
+				for (x = mx = 0; x < idx; ++x) {
+					if (old->data[x] == L'\t') mx += tab_width;
+					else if (iswspace(old->data[x])) mx++;
+					else break;
 				}
+				ox = mindent(ln, mx);
+			}
 
-				memcpy(ln->data+ox, old->data+idx, len);
-				old->data[idx] = 0;
-				mjump(buf, MARKER_START);
-				mmove(buf, ox, +1);
+			memcpy(ln->data+ox, old->data+idx, len);
+			old->data[idx] = 0;
+			mjump(buf, MARKER_START);
+			mmove(buf, ox, +1);
+
+			if (mode == MODE_COMMAND) {
+				mruncmd(cmdbuf->curline->prev->data);
+				resize();
 			}
 		}
 		break;
@@ -613,21 +619,16 @@ void mruncmd(wchar_t *buf) {
 		free(acmd);
 
 		/* Print command output */
-		mode = MODE_INSERT;
-		mreadstr(cmdbuf, "\n");
 		mreadstr(cmdbuf, out);
-		mode = MODE_COMMAND;
-
-		resize();
 	} else {
 		/* Is it a builtin command? */
 		for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
 			if (buffer_actions[i].cmd) {
 				/* Check for valid command */
 				if (/* Either the single-char keyboard shortcut... */
-				    (cmdlen == 1 && buffer_actions[i].key == cmd[0])
+				    (cmdlen == 1 && buffer_actions[i].key == cmd[0]) ||
 				    /* ...or the full command */
-				    || !wcsncmp(buffer_actions[i].cmd, cmd, cmdlen)) {
+				    ((unsigned)cmdlen == wcslen(buffer_actions[i].cmd) && !wcsncmp(buffer_actions[i].cmd, cmd, cmdlen))) {
 					Action ac;
 					memcpy(&ac, &buffer_actions[i], sizeof(Action));
 					if (arg) {
@@ -830,9 +831,8 @@ void handlemouse() {
 }
 
 void quit() {
-	Buffer *buf;
-	for (buf = buflist; buf; buf = buf->next)
-		mfreebuf(buf);
+	Buffer *buf = buflist;
+	do mfreebuf(buf); while((buf = buf->next));
 	delwin(cmdwin);
 	delwin(bufwin);
 	delwin(statuswin);
@@ -881,6 +881,11 @@ void readstr(const Action *ac) {
 	mreadstr(curbuf, (char*)ac->arg.v);
 }
 
+void print(const Action *ac) {
+	mreadstr(cmdbuf, (char*)ac->arg.v);
+	resize();
+}
+
 void find(const Action *ac) {
 	if (ac->arg.v) {
 		char msgbuf[100];
@@ -894,9 +899,9 @@ void find(const Action *ac) {
 		}
 
 		for (ln = curbuf->curline; ln; ln = ln->next, ++y) {
-			int lineoff = curbuf->cursor.c.x * sizeof(wchar_t);
+			int lineoff = curbuf->cursor.c.x;
 			char buf[default_linebuf_size * 4];
-			const wchar_t *wdat = ln->data + lineoff;
+			const wchar_t *wdat = ln->data + lineoff * sizeof(wchar_t);
 			regmatch_t match;
 
 			wcsrtombs(buf, &wdat, sizeof(buf), NULL);
@@ -932,12 +937,11 @@ void listbuffers() {
 		snprintf(
 			str,
 			sizeof(str),
-			buf == curbuf ? "\n*%d %s" : "\n %d %s",
+			buf == curbuf ? "*%d %s\n" : " %d %s\n",
 			i, buf->path);
 		mreadstr(cmdbuf, str);
 		i++;
 	} while((buf = buf->next));
-	resize();
 }
 
 void motion(const Action *ac) {
@@ -955,13 +959,18 @@ void coc() {
 }
 
 void pgup() {
-	int row = getmaxy(bufwin);
+	int row = getmaxy(bufwin)-1;
 	mmove(curbuf, 0, -row);
 }
 
 void pgdown() {
-	int row = getmaxy(bufwin);
+	int row = getmaxy(bufwin)-1;
 	mmove(curbuf, 0, +row);
+}
+
+void cls() {
+	mclearbuf(cmdbuf);
+	resize();
 }
 
 void bufsel(const Action *ac) {
