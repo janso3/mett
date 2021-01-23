@@ -139,10 +139,6 @@ int main(int argc, char **argv) {
 	int i;
 	wint_t key;
 
-	/* Hack: When spawned in a new terminal window, ncurses will
-	 * sometimes report the wrong screen dimension when calling
-	 * getmaxyx() too soon.*/
-	usleep(10000);
 	setlocale(LC_ALL, "");
 
 	/* Init buffers */
@@ -184,9 +180,7 @@ int main(int argc, char **argv) {
 			switch (mode) {
 			case MODE_NORMAL:
 				/* Special keys will cancel action sequences */
-				if (key == ESC || key == '\n') {
-					repcnt = 0;
-				}
+				if (key == ESC || key == '\n') repcnt = 0;
 				mcmdkey(key);
 				break;
 			case MODE_SELECT:
@@ -579,6 +573,7 @@ char* mexec(const char *cmd) {
 		exit(0);
 	} else {
 		close(pipes[1]);
+		memset(buf, 0, sizeof(buf));
 		read(pipes[0], buf, sizeof(buf));
 		return buf;
 	}
@@ -609,43 +604,30 @@ void mruncmd(wchar_t *buf) {
 		wcsrtombs(arg, &warg, (exlen - cmdlen) * 4, NULL);
 	}
 
-	/* Is it a shell command? */
-	if (cmd[0] == L'!') {
-		/* Run command */
-		const wchar_t *wcmd = cmd+1;
-		char *acmd = (char*)malloc(cmdlen * 4);
-		wcsrtombs(acmd, &wcmd, cmdlen * 4, NULL);
-		char *out = mexec(acmd);
-		free(acmd);
-
-		/* Print command output */
-		mreadstr(cmdbuf, out);
-	} else {
-		/* Is it a builtin command? */
-		for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
-			if (buffer_actions[i].cmd) {
-				/* Check for valid command */
-				if (/* Either the single-char keyboard shortcut... */
-				    (cmdlen == 1 && buffer_actions[i].key == cmd[0]) ||
-				    /* ...or the full command */
-				    ((unsigned)cmdlen == wcslen(buffer_actions[i].cmd) && !wcsncmp(buffer_actions[i].cmd, cmd, cmdlen))) {
-					Action ac;
-					memcpy(&ac, &buffer_actions[i], sizeof(Action));
-					if (arg) {
-						/* Check for shell command */
-						if (arg[0] == '!') ac.arg.v = mexec(arg+1);
-						else ac.arg.v = arg;
-					}
-
-					/* FIXME: This is an ugly hack */
-					bool indent = auto_indent;
-					auto_indent = FALSE;
-					mode = MODE_INSERT;
-					mrepeat(&ac, cnt);
-					mode = MODE_COMMAND;
-					auto_indent = indent;
-					/* TODO: Parse next command in chain */
+	/* Is it a builtin command? */
+	for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
+		if (buffer_actions[i].cmd) {
+			/* Check for valid command */
+			if (/* Either the single-char keyboard shortcut... */
+			    (cmdlen == 1 && buffer_actions[i].key == cmd[0]) ||
+			    /* ...or the full command */
+			    ((unsigned)cmdlen == wcslen(buffer_actions[i].cmd) && !wcsncmp(buffer_actions[i].cmd, cmd, cmdlen))) {
+				Action ac;
+				memcpy(&ac, &buffer_actions[i], sizeof(Action));
+				if (arg) {
+					/* Check for shell command */
+					if (arg[0] == '!') ac.arg.v = mexec(arg+1);
+					else ac.arg.v = arg;
 				}
+
+				/* FIXME: This is an ugly hack */
+				bool indent = auto_indent;
+				auto_indent = FALSE;
+				mode = MODE_INSERT;
+				mrepeat(&ac, cnt);
+				mode = MODE_COMMAND;
+				auto_indent = indent;
+				/* TODO: Parse next command in chain */
 			}
 		}
 	}

@@ -80,7 +80,7 @@ const Action buffer_actions[] = {
 	{  L"newln",    L'o',          newln,       {{ 0 }} },
 
 	/* Misc */
-	{  L"print",    0,             print,       {{ 0 }} },
+	{  L"print",    L'p',          print,       {{ 0 }} },
 	{  L"about",    0,             print,       { .v = (void*)VERSION_STRING } },
 	{  L"quit",     L'q',          quit,        {{ 0 }} },
 	{  L"exit",     0,             quit,        {{ 0 }} },
