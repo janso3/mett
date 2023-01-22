@@ -1,5 +1,5 @@
-INCS =
-CFLAGS = $(INCS) -g -O2 -std=c11 -Wall -Wextra -pedantic-errors
+INCS = -I/usr/include/ncursesw/
+CFLAGS = $(INCS) -g -std=c11 -Wall -Wextra -pedantic-errors
 LDFLAGS = -lncursesw -lm
 
 PREFIX = /usr/local

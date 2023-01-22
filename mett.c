@@ -1,5 +1,6 @@
 #define _XOPEN_SOURCE
 #define _XOPEN_SOURCE_EXTENDED
+#include <assert.h>
 #include <ctype.h>
 #include <curses.h>
 #include <locale.h>
@@ -20,86 +21,86 @@
 #define SWAP(X, Y, T) { T SWAP = X; X = Y; Y = SWAP; }
 #define BINDABLE(fn) static void fn()
 
-typedef enum {
+enum Mode {
 	MODE_NORMAL,
 	MODE_INSERT,
 	MODE_SELECT,
 	MODE_COMMAND
-} Mode;
+};
 
-typedef enum {
+enum Marker {
 	MARKER_START,
 	MARKER_MIDDLE,
 	MARKER_END
-} Marker;
+};
 
-typedef struct {
+struct Coord {
 	int x, y;
-} Coord;
+};
 
-typedef struct {
-	Coord c; /* Cursor coordinate */
-	Coord v0; /* Visual selection start */
-	Coord v1; /* Visual selection end */
-} Cursor;
+struct Cursor {
+	struct Coord c; /* Cursor coordinate */
+	struct Coord v0; /* Visual selection start */
+	struct Coord v1; /* Visual selection end */
+};
 
-typedef struct line {
-	struct line *next, *prev;
-	size_t length;
+struct Line {
+	struct Line *next, *prev;
+	size_t backbuf_size;
 	wchar_t data[];
-} Line;
+};
 
-typedef struct buffer {
-	struct buffer *next, *prev;
+struct Buffer {
 	char *path;
-	Line *lines, *curline;
-	Cursor cursor;
+	struct Buffer *next;
+	struct Line *curline;
+	struct Cursor cursor;
 	int starty;
 	int offsetx;
 	int numlines;
-} Buffer;
+};
 
-typedef struct {
+struct Action {
 	wchar_t *cmd;
 	int key;
 	void (*fn)();
-	union Arg {
+	union {
 		struct { int x, y; };
 		int i;
 		void *v;
-		Marker m;
+		enum Marker m;
 	} arg;
-} Action;
+};
 
 static int32_t min(int32_t, int32_t);
 static int32_t max(int32_t, int32_t);
 
 static void msighandler(int);
 
-static Buffer* mnewbuf();
-static void mfreebuf(Buffer*);
-static void mclearbuf(Buffer*);
-static int  mreadfile(Buffer*, const char*);
-static void mreadstr(Buffer*, const char*);
+static struct Buffer* mnewbuf();
+static void mfreebuf(struct Buffer*);
+static void mclearbuf(struct Buffer*);
+static int  mreadfile(struct Buffer*, const char*);
+static void mreadstr(struct Buffer*, const char*);
 
-static int  mnumlines(Buffer*);
-static int  mnumvislines(Line*);
-static int  mnumcols(Line*, int );
+static struct Line* mnewline(size_t backbuf_size);
+static void mfreeln(struct Buffer*, struct Line*);
+static struct Line* mresizeline(struct Line*, size_t);
+static struct Line* mfirstline(struct Buffer*);
+static int  mnumcols(struct Line*, int );
 static void mupdatecursor();
 static void mcmdkey(wint_t);
-static void minsert(Buffer*, wint_t);
-static int  mindent(Line*, int);
-static void mfreeln(Line*);
-static void msetln(Line*, const wchar_t*);
-static void mmove(Buffer*, int, int);
-static void mjump(Buffer*, Marker);
-static void mselect(Buffer*, int, int, int, int);
-static void mrepeat(const Action*, int);
+static void minsert(struct Buffer*, wint_t);
+static int  mindent(struct Line*, int);
+static void mmove(struct Buffer*, int, int);
+static void mjump(struct Buffer*, enum Marker);
+static void mselect(struct Buffer*, int, int, int, int);
+static void mrepeat(const struct Action*, int);
 static void mruncmd(wchar_t*);
 
 static void mpaintstat();
-static void mpaintln(Buffer*, Line*, WINDOW*, int, int, bool);
-static void mpaintbuf(Buffer*, WINDOW*, bool);
+static void mpaintln(struct Buffer*, struct Line*, WINDOW*, int, int, bool);
+static void mpaintbuf(struct Buffer*, WINDOW*, bool);
 static void mpaintcmd();
 
 BINDABLE (resize);
@@ -127,9 +128,9 @@ BINDABLE (append);
 BINDABLE (newln);
 
 /* Global variables */
-static Mode mode = MODE_NORMAL;
+static enum Mode mode = MODE_NORMAL;
 static WINDOW *bufwin, *statuswin, *cmdwin;
-static Buffer *buflist, *curbuf, *cmdbuf;
+static struct Buffer *curbuf, *cmdbuf;
 static int repcnt = 0;
 
 /* We make all the declarations available to the user */
@@ -143,17 +144,16 @@ int main(int argc, char **argv) {
 
 	/* Init buffers */
 	cmdbuf = mnewbuf();
+	minsert(cmdbuf, L' ');
 	cmdbuf->offsetx = 0;
 	signal(SIGHUP,  msighandler);
 	signal(SIGKILL, msighandler);
 	signal(SIGINT,  msighandler);
 	signal(SIGTERM, msighandler);
 
+	curbuf = mnewbuf();
 	for (i = 1; i < argc; ++i)
-		mreadfile((curbuf = mnewbuf()), argv[i]);
-
-	if (!curbuf)
-		curbuf = mnewbuf();
+		mreadfile(curbuf, argv[i]);
 
 	/* Init curses */
 	newterm(NULL, stderr, stderr);
@@ -195,6 +195,7 @@ int main(int argc, char **argv) {
 				if (key == ESC) {
 					mode = MODE_NORMAL;
 					mclearbuf(cmdbuf);
+					minsert(cmdbuf, L' ');
 					resize();
 				}
 				else minsert(cmdbuf, key);
@@ -226,83 +227,67 @@ void msighandler(int signum) {
 	}
 }
 
-Buffer* mnewbuf() {
+struct Buffer* mnewbuf() {
 	/* Create new buffer and insert at start of the list */
-	Buffer *next = NULL;
-	if (buflist) next = buflist;
-	if (!(buflist = (Buffer*)calloc(1, sizeof(Buffer)))) return NULL;
-	buflist->next = next;
-	/* Every buffer has at least one line */
-	buflist->curline = buflist->lines = (Line*)calloc(sizeof(wchar_t), sizeof(Line)+default_linebuf_size);
-	buflist->curline->length = default_linebuf_size;
-	buflist->offsetx = 4;
-	if (next) buflist->next->prev = buflist;
-	mselect(buflist, -1, -1, -1, -1);
-	return buflist;
+	struct Buffer *next = NULL;
+	if (curbuf) next = curbuf;
+	if (!(curbuf = (struct Buffer*)calloc(sizeof(struct Buffer), 1))) return NULL;
+	curbuf->next = next;
+	curbuf->offsetx = 4;
+	mselect(curbuf, -1, -1, -1, -1);
+	return curbuf;
 }
 
-void mfreebuf(Buffer *buf) {
-	if (!buf) return;
+void mfreebuf(struct Buffer *buf) {
 	free(buf->path);
 	mclearbuf(buf);
-	free(buf->lines);
-	if (buf->prev) buf->prev->next = buf->next;
-	if (buf->next) buf->next->prev = buf->prev;
-	if (curbuf == buf) curbuf = buf->next;
 }
 
-void mclearbuf(Buffer *buf) {
-	Line *ln;
-	if (!buf || !buf->lines) return;
-	ln = buf->lines->next;
+void mclearbuf(struct Buffer *buf) {
+	struct Line *firstline, *ln;
+	if (!(firstline = mfirstline(buf))) return;
+	ln = firstline;
 	while (ln) {
-		Line *next = ln->next;
+		struct Line *next = ln->next;
 		free(ln);
 		ln = next;
 	}
-	buf->lines->data[0] = 0;
-	buf->lines->next = NULL;
 	buf->cursor.c.x = buf->cursor.c.y = 0;
-	buf->curline = buf->lines;
+	buf->numlines = 0;
+	buf->curline = NULL;
 }
 
-int mreadfile(Buffer *buf, const char *path) {
+int mreadfile(struct Buffer *buf, const char *path) {
 	FILE *fp = NULL;
 
-	if (!buf || !path) return 0;
-	if (path[0] == '-' && !path[1]) {
-		fp = stdin;
-	} else {
-		fp = fopen(path, "r");
-	}
+	if (path[0] == '-' && !path[1]) fp = stdin;
+	else fp = fopen(path, "r");
 
 	if (fp) {
-		wchar_t linecnt[default_linebuf_size];
-		Line *ln = buf->lines;
-		while (fgetws(linecnt, default_linebuf_size, fp) == linecnt) {
-			Line *curln = ln;
-			int len = wcslen(linecnt);
-			if (!curln) break;
-			wcsncpy(ln->data, linecnt, default_linebuf_size);
-			ln->data[len-1] = 0;
-			if (!(ln->next = (Line*)calloc(sizeof(Line)+default_linebuf_size*sizeof(wchar_t), 1))) return 0;
-			ln->length = default_linebuf_size;
-			ln = ln->next;
-			ln->prev = curln;
-		}
+		wchar_t c;
+		int m = mode;
+		bool indent = auto_indent;
+
+		auto_indent = FALSE;
+		mode = MODE_INSERT;
+
+		while ((c = fgetwc(fp)) != EOF)
+			minsert(buf, c);
+
+		auto_indent = indent;
+		mode = m;
 	}
 
-	buf->path = (char*)calloc(1, strlen(path)+1);
-	buf->numlines = mnumlines(buf);
+	buf->curline = mfirstline(buf);
+	buf->path = (char*)calloc(strlen(path)+1, 1);
 	strcpy(buf->path, path);
 	if (fp) fclose(fp);
 
 	return 1;
 }
 
-void mreadstr(Buffer *buf, const char *str) {
+void mreadstr(struct Buffer *buf, const char *str) {
 	int i, len, m = mode;
-	if (!buf || !str) return;
 	len = strlen(str);
 	mode = MODE_INSERT;
 	for (i = 0; i < len; ++i)
@@ -310,28 +295,55 @@ void mreadstr(Buffer *buf, const char *str) {
 	mode = m;
 }
 
-int mnumlines(Buffer *buf) {
-	Line *ln;
-	int n = 0;
-	if (!buf) return 0;
-	ln = buf->lines;
-	while (ln) {
-		ln = ln->next;
-		n++;
+struct Line* mnewline(size_t backbuf_size) {
+	struct Line *line = calloc(sizeof(struct Line) + backbuf_size, 1);
+	assert(line);
+	line->backbuf_size = backbuf_size;
+	return line;
+}
+
+void mfreeln(struct Buffer *buf, struct Line *ln) {
+	struct Line *next = NULL;
+
+	if (!ln) return;
+	if (ln->prev) {
+		ln->prev->next = ln->next;
+		next = ln->prev;
 	}
-	return n;
+	if (ln->next) {
+		ln->next->prev = ln->prev;
+		next = ln->next;
+	}
+
+	if (ln == buf->curline)
+		buf->curline = next;
+
+	free(ln);
+	buf->numlines--;
 }
 
-int mnumvislines(Line *ln) {
-	/* How many 'visual lines' will be needed
-	 * in order to display the physical line? */
-	int len, col;
-	col = getmaxx(bufwin);
-	len = wcslen(ln->data) + 4;
-	return col ? (len + col - 1) / col : 1;
+struct Line* mresizeline(struct Line *ln, size_t size) {
+	struct Line *prev = ln->prev, *next = ln->next;
+	ln = realloc(ln, sizeof(struct Line) + size);
+	assert(ln);
+	ln->backbuf_size = size;
+	if (prev)
+		prev->next = ln;
+	if (next)
+		next->prev = ln;
+	return ln;
 }
 
-int mnumcols(Line *ln, int end) {
+struct Line* mfirstline(struct Buffer *buf) {
+	struct Line *first = NULL, *ln = buf->curline;
+	while (ln) {
+		first = ln;
+		ln = ln->prev;
+	}
+	return first;
+}
+
+int mnumcols(struct Line *ln, int end) {
 	/* Count number of columns until cursor */
 	int i, ncols;
 	for (i = ncols = 0; i < end; ++i) {
@@ -344,7 +356,7 @@ int mnumcols(Line *ln, int end) {
 void mupdatecursor() {
 	/* Place the cursor depending on the mode */
 	WINDOW *win = mode == MODE_COMMAND ? cmdwin : bufwin;
-	Buffer *buf = mode == MODE_COMMAND ? cmdbuf : curbuf;
+	struct Buffer *buf = mode == MODE_COMMAND ? cmdbuf : curbuf;
 	int ncols = mnumcols(buf->curline, buf->cursor.c.x);
 	wmove(win, buf->cursor.c.y - buf->starty, buf->offsetx + ncols);
 	wrefresh(win);
@@ -355,11 +367,17 @@ void mcmdkey(wint_t key) {
 	if (isdigit(key) && !(key == '0' && !repcnt)) {
 		repcnt = min(10 * repcnt + (key - '0'), max_cmd_repetition);
 	} else {
-		int i;
-		for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
+		size_t i;
+		for (i = 0; i < (size_t)(sizeof(buffer_actions) / sizeof(struct Action)); ++i) {
 			if (key == (wint_t)buffer_actions[i].key) {
-				msetln(cmdbuf->curline, buffer_actions[i].cmd);
-				mjump(cmdbuf, MARKER_END);
+				mclearbuf(cmdbuf);
+				if (buffer_actions[i].cmd) {
+					size_t j, len;
+					len = wcslen(buffer_actions[i].cmd);
+					for (j = 0; j < len; ++j)
+						minsert(cmdbuf, buffer_actions[i].cmd[j]);
+					mjump(cmdbuf, MARKER_END);
+				}
 				mrepeat(&buffer_actions[i], repcnt ? repcnt : 1);
 			}
 		}
@@ -367,38 +385,48 @@ void mcmdkey(wint_t key) {
 	}
 }
 
-void minsert(Buffer *buf, wint_t key) {
-	int idx, len;
-	Line *ln;
+void minsert(struct Buffer *buf, wint_t key) {
+	size_t idx, len = 0;
+	struct Line *ln = buf->curline;
 
-	if (!buf || !(ln = buf->curline)) return;
+	/* Create or resize the current line if needed. */
+	if (!ln) {
+		ln = buf->curline = mnewline(default_linebuf_size);
+		buf->numlines = 1;
+	} else {
+		len = wcslen(ln->data);
+		if ((len+1) * sizeof(wchar_t) >= ln->backbuf_size)
+			ln = buf->curline = mresizeline(ln, ln->backbuf_size * 2);
+	}
 
-	idx = buf->cursor.c.x;
-	len = (wcslen(ln->data)+1) * sizeof(wchar_t);
+	idx = min(buf->cursor.c.x, len);
 
 	switch (key) {
 	case '\b':
 	case 127:
 	case KEY_BACKSPACE:
 		if (idx) {
-			memcpy(ln->data+idx-1, ln->data+idx, len);
+			memcpy(&ln->data[idx-1], &ln->data[idx], (len - idx + 1) * sizeof(wchar_t));
 			buf->cursor.c.x--;
 		} else if (ln->prev) {
 			int plen = wcslen(ln->prev->data);
+			if (ln->prev->backbuf_size <= plen + ln->backbuf_size)
+				ln->prev = mresizeline(ln->prev, ln->prev->backbuf_size + ln->backbuf_size);
 			wcscpy(ln->prev->data+plen, ln->data);
 			mmove(buf, plen + buf->cursor.c.x, -1);
 			buf->curline = ln->prev;
-			mfreeln(ln);
+			mfreeln(buf, ln);
+			buf->numlines--;
 		}
 		break;
 	case KEY_DC:
-		memcpy(ln->data+idx, ln->data+idx+1, len);
+		memcpy(&ln->data[idx], &ln->data[idx+1], (len - idx + 1) * sizeof(wchar_t));
 		break;
 	case '\n':
 		{
 			int ox = 0;
-			Line *old = ln;
-			ln = (Line*)calloc(sizeof(wchar_t), sizeof(Line) + default_linebuf_size);
+			struct Line *old = ln;
+			ln = mnewline(old->backbuf_size);
 			ln->next = old->next;
 			ln->prev = old;
 			if (old->next) old->next->prev = ln;
@@ -406,7 +434,7 @@ void minsert(Buffer *buf, wint_t key) {
 
 			if (auto_indent) {
 				/* Indent to the last position */
-				int x, mx;
+				size_t x, mx;
 				for (x = mx = 0; x < idx; ++x) {
 					if (old->data[x] == L'\t') mx += tab_width;
 					else if (iswspace(old->data[x])) mx++;
@@ -415,7 +443,7 @@ void minsert(Buffer *buf, wint_t key) {
 				ox = mindent(ln, mx);
 			}
 
-			memcpy(ln->data+ox, old->data+idx, len);
+			memcpy(&ln->data[ox], &old->data[idx], (len - idx + 1) * sizeof(wchar_t));
 			old->data[idx] = 0;
 			mjump(buf, MARKER_START);
 			mmove(buf, ox, +1);
@@ -424,21 +452,21 @@ void minsert(Buffer *buf, wint_t key) {
 				mruncmd(cmdbuf->curline->prev->data);
 				resize();
 			}
+
+			buf->numlines++;
 		}
 		break;
 	default:
 		{
-			memcpy(ln->data+idx+1, ln->data+idx, len);
+			if (len) memcpy(&ln->data[idx + 1], &ln->data[idx], (len - idx + 1) * sizeof(wchar_t));
 			ln->data[idx] = key;
 			buf->cursor.c.x++;
 		}
 		break;
 	}
-
-	buf->numlines = mnumlines(buf);
 }
 
-int mindent(Line *ln, int n) {
+int mindent(struct Line *ln, int n) {
 	int i, j, tabs, spaces;
 
 	tabs = n / tab_width;
@@ -452,23 +480,11 @@ int mindent(Line *ln, int n) {
 	return tabs + spaces;
 }
 
-void mfreeln(Line *ln) {
-	if (ln) {
-		if (ln->prev)
-			ln->prev->next = ln->next;
-		if (ln->next)
-			ln->next->prev = ln->prev;
-		free(ln);
-	}
-}
-
-void msetln(Line *ln, const wchar_t *data) {
-	if (ln && data) wcscpy(ln->data, data);
-}
-
-void mmove(Buffer *buf, int x, int y) {
+void mmove(struct Buffer *buf, int x, int y) {
 	int i, len;
 	int row;
+
+	if (!buf->curline) return;
 
 	row = getmaxy(bufwin);
 
@@ -484,7 +500,7 @@ void mmove(Buffer *buf, int x, int y) {
 			} else break;
 			if (buf->cursor.c.y < buf->starty) {
 				/* Scroll the view up */
-				buf->starty -= mnumvislines(buf->curline);
+				buf->starty--;
 			}
 		}
 	} else {
@@ -495,7 +511,7 @@ void mmove(Buffer *buf, int x, int y) {
 			} else break;
 			if (buf->cursor.c.y - buf->starty >= row) {
 				/* Scroll the view down */
-				buf->starty += mnumvislines(buf->curline);
+				buf->starty++;
 			}
 		}
 	}
@@ -506,25 +522,27 @@ void mmove(Buffer *buf, int x, int y) {
 
 	/* Update selection end */
 	if (mode == MODE_SELECT) {
-		buf->cursor.v1 = (Coord){buf->cursor.c.x, buf->cursor.c.y};
+		buf->cursor.v1 = (struct Coord){buf->cursor.c.x, buf->cursor.c.y};
 	}
 }
 
-void mjump(Buffer *buf, Marker mark) {
+void mjump(struct Buffer *buf, enum Marker mark) {
 	switch(mark) {
 	case MARKER_START:
 		buf->cursor.c.x = 0;
 		break;
 	case MARKER_MIDDLE:
 		{
-			Line *ln = buf->curline;
+			struct Line *ln = buf->curline;
+			if (!ln) return;
 			size_t len = wcslen(ln->data);
 			buf->cursor.c.x = (len/2);
 		}
 		break;
 	case MARKER_END:
 		{
-			Line *ln = buf->curline;
+			struct Line *ln = buf->curline;
+			if (!ln) return;
 			size_t len = wcslen(ln->data);
 			buf->cursor.c.x = max(len, 0);
 		}
@@ -532,53 +550,31 @@ void mjump(Buffer *buf, Marker mark) {
 	}
 }
 
-void mselect(Buffer *buf, int x1, int y1, int x2, int y2) {
-	buf->cursor.v0 = (Coord){ x1, y1 };
-	buf->cursor.v1 = (Coord){ x2, y2 };
+void mselect(struct Buffer *buf, int x1, int y1, int x2, int y2) {
+	buf->cursor.v0 = (struct Coord){ x1, y1 };
+	buf->cursor.v1 = (struct Coord){ x2, y2 };
 }
 
-void mrepeat(const Action *ac, int n) {
+void mrepeat(const struct Action *ac, int n) {
 	int i;
 	n = min(n, max_cmd_repetition);
 	for (i = 0; i < n; ++i)
 		ac->fn(ac);
 }
 
-int mfindchr(wchar_t *buf, int start, wchar_t c) {
-	int i, len;
-	len = wcslen(buf);
-	for (i = start; i < len; ++i) {
-		if (buf[i] == c) return i;
-	}
-	return -1;
-}
-
 char* mexec(const char *cmd) {
-	/* Execute cmd and return stdout */
-	static char buf[1024 * 64];
-	int pipes[2];
-	pid_t pid;
+	/* Execute cmd and return stdout.
+	 * TODO: Get rid of the fixed buffer. */
+	FILE *fp;
+	static char buf[1024 * 1024 * 4];
 
-	if (pipe(pipes) == -1)
-		return NULL;
+	fp = popen(cmd, "r");
+	if (!fp) return NULL;
 
-	if ((pid = fork()) == -1)
-		return NULL;
-
-	if (!pid) {
-		dup2(pipes[1], STDOUT_FILENO);
-		close(pipes[0]);
-		close(pipes[1]);
-		system(cmd);
-		exit(0);
-	} else {
-		close(pipes[1]);
-		memset(buf, 0, sizeof(buf));
-		read(pipes[0], buf, sizeof(buf));
-		return buf;
-	}
-
-	return NULL;
+	fread(buf, 1, sizeof(buf), fp);
+	pclose(fp);
+	
+	return buf;
 }
 
 void mruncmd(wchar_t *buf) {
@@ -593,27 +589,34 @@ void mruncmd(wchar_t *buf) {
 	/* Find length of command */
 	exlen = wcslen(cmd);
 	if (!exlen) return;
-	if ((cmdlen = mfindchr(cmd, 0, L' ')) < 0) {
-		cmdlen = exlen;
+
+	for (cmdlen = 0; cmdlen < exlen; ++cmdlen) {
+			if ((cmd[cmdlen] == L' ' && cmdlen) || cmd[cmdlen] == L'!') break;
 	}
 
 	/* Parse optional argument */
 	if (exlen > cmdlen) {
-		const wchar_t *warg = &cmd[cmdlen+1];
+		const wchar_t *warg = cmd + cmdlen;
+		if (warg[0] == L' ') warg++;
 		arg = (char*)malloc((exlen - cmdlen) * 4);
 		wcsrtombs(arg, &warg, (exlen - cmdlen) * 4, NULL);
 	}
 
+	if (cmd[0] == L' ') {
+			cmd++;
+			cmdlen--;
+	}
+
 	/* Is it a builtin command? */
-	for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(Action)); ++i) {
+	for (i = 0; i < (int)(sizeof(buffer_actions) / sizeof(struct Action)); ++i) {
 		if (buffer_actions[i].cmd) {
 			/* Check for valid command */
 			if (/* Either the single-char keyboard shortcut... */
 			    (cmdlen == 1 && buffer_actions[i].key == cmd[0]) ||
 			    /* ...or the full command */
 			    ((unsigned)cmdlen == wcslen(buffer_actions[i].cmd) && !wcsncmp(buffer_actions[i].cmd, cmd, cmdlen))) {
-				Action ac;
-				memcpy(&ac, &buffer_actions[i], sizeof(Action));
+				struct Action ac;
+				memcpy(&ac, &buffer_actions[i], sizeof(struct Action));
 				if (arg) {
 					/* Check for shell command */
 					if (arg[0] == '!') ac.arg.v = mexec(arg+1);
@@ -628,6 +631,7 @@ void mruncmd(wchar_t *buf) {
 				mode = MODE_COMMAND;
 				auto_indent = indent;
 				/* TODO: Parse next command in chain */
+				break;
 			}
 		}
 	}
@@ -636,8 +640,8 @@ void mruncmd(wchar_t *buf) {
 }
 
 void mpaintstat() {
-	Buffer *cur = buflist;
-	int col, nlines, bufsize;
+	struct Buffer *cur = curbuf;
+	int col, bufsize;
 	char textbuf[32];
 	char *bufname = "~scratch~";
 	const char *modes[] = { "NORMAL", "INSERT", "SELECT", "COMMAND" };
@@ -651,12 +655,11 @@ void mpaintstat() {
 	/* Buffer name, buffer length */
 	if (use_colors) wattron(statuswin, COLOR_PAIR(PAIR_STATUS_BAR));
 
-	nlines = curbuf->numlines;
 	if (curbuf && curbuf->path) bufname = curbuf->path;
-	wprintw(statuswin, "%s, %i lines", bufname, nlines);
+	wprintw(statuswin, "%s, %i lines", bufname, curbuf->numlines);
 
 	/* Mode, cursor pos */
-	cur = mode == MODE_COMMAND ? cmdbuf : buflist;
+	cur = mode == MODE_COMMAND ? cmdbuf : curbuf;
 	bufsize = snprintf(textbuf, sizeof(textbuf), "%s %d:%d", modes[mode], cur ? cur->cursor.c.y : 0, cur ? cur->cursor.c.x : 0);
 	if (use_colors) wattron(statuswin, COLOR_PAIR(PAIR_STATUS_HIGHLIGHT));
 	mvwprintw(statuswin, 0, col - bufsize, "%s", textbuf);
@@ -666,10 +669,10 @@ void mpaintstat() {
 	wrefresh(statuswin);
 }
 
-void mpaintln(Buffer *buf, Line *ln, WINDOW *win, int y, int n, bool numbers) {
-	int x, len;
-	int i, j;
-	int col;
+void mpaintln(struct Buffer *buf, struct Line *ln, WINDOW *win, int y, int n, bool numbers) {
+	size_t x, len;
+	size_t i, j;
+	size_t col;
 
 	col = getmaxx(win);
 	x = buf->offsetx;
@@ -692,8 +695,8 @@ void mpaintln(Buffer *buf, Line *ln, WINDOW *win, int y, int n, bool numbers) {
 		}
 
 		/* Highlight the current selection */
-		Coord sel_start = buf->cursor.v0;
-		Coord sel_end = buf->cursor.v1;
+		struct Coord sel_start = buf->cursor.v0;
+		struct Coord sel_end = buf->cursor.v1;
 		if (sel_end.x < sel_start.x) SWAP(sel_start.x, sel_end.x, int);
 		if (sel_end.y < sel_start.y) SWAP(sel_start.y, sel_end.y, int);
 		if (abs_y >= sel_start.y &&
@@ -712,7 +715,7 @@ void mpaintln(Buffer *buf, Line *ln, WINDOW *win, int y, int n, bool numbers) {
 				c = tab_beginning; setcchar(&cc, &c, 0, 0, 0);
 				mvwadd_wch(win, y, x++, &cc);
 				c = tab_character; setcchar(&cc, &c, 0, 0, 0);
-				for (j = 0; j < (int)tab_width-1; ++j) {
+				for (j = 0; j < tab_width-1; ++j) {
 					mvwadd_wch(win, y, x, &cc);
 					x++;
 				}
@@ -721,7 +724,7 @@ void mpaintln(Buffer *buf, Line *ln, WINDOW *win, int y, int n, bool numbers) {
 			default:
 			{
 				cchar_t cc;
-				setcchar(&cc, &c, 0, 0, 0);
+				setcchar(&cc, &c, 0, 0, NULL);
 				mvwadd_wch(win, y, x, &cc);
 				x++;
 			}
@@ -731,26 +734,24 @@ void mpaintln(Buffer *buf, Line *ln, WINDOW *win, int y, int n, bool numbers) {
 	}
 }
 
-void mpaintbuf(Buffer *buf, WINDOW *win, bool numbers) {
-	int i, l, cp;
+void mpaintbuf(struct Buffer *buf, WINDOW *win, bool numbers) {
+	int i, cp;
 	int row;
-	Line *ln;
+	struct Line *ln;
 
-	if (!buf || !bufwin) return;
+	if (!buf->curline) return;
+	
 	row = getmaxy(win);
 	cp = buf->cursor.c.y - buf->starty;
 
 	/* Paint from the cursor to the bottom */
-	for (i = cp, l = 0, ln = buf->curline; i < row && ln; ++l, ln = ln->next) {
-		mpaintln(buf, ln, win, i, l, numbers);
-		i += mnumvislines(ln);
-	}
+	for (i = cp, ln = buf->curline; i < row && ln; ++i, ln = ln->next)
+		mpaintln(buf, ln, win, i, i - cp, numbers);
 
 	/* Paint from the cursor to the top */
-	for (i = cp, l = 0, ln = buf->curline; i >= 0 && ln; ++l, ln = ln->prev) {
-		mpaintln(buf, ln, win, i, l, numbers);
-		i -= ln->prev ? mnumvislines(ln->prev) : 1;
-	}
+	for (i = cp, ln = buf->curline; i >= 0 && ln; --i, ln = ln->prev)
+		mpaintln(buf, ln, win, i, cp - i, numbers);
+
 	wrefresh(win);
 }
 
@@ -775,20 +776,19 @@ void mpaintcmd() {
 }
 
 void resize() {
-	int row, col, nlines;
+	int row, col;
 	getmaxyx(stdscr, row, col);
-	nlines = mnumlines(cmdbuf);
 	if (statuswin) delwin(statuswin);
 	if (cmdwin) delwin(cmdwin);
 	if (bufwin) delwin(bufwin);
 	statuswin = newwin(1, col, 0, 0);
-	bufwin = newwin(row-nlines-1, col, 1, 0);
-	cmdwin = newwin(nlines, col, row-nlines, 0);
+	bufwin = newwin(row - cmdbuf->numlines - 1, col, 1, 0);
+	cmdwin = newwin(cmdbuf->numlines, col, row - cmdbuf->numlines, 0);
 }
 
 void repaint() {
-	werase(statuswin);
 	werase(bufwin);
+	werase(statuswin);
 	werase(cmdwin);
 	refresh();
 	mpaintstat();
@@ -813,7 +813,7 @@ void handlemouse() {
 }
 
 void quit() {
-	Buffer *buf = buflist;
+	struct Buffer *buf = curbuf;
 	do mfreebuf(buf); while((buf = buf->next));
 	delwin(cmdwin);
 	delwin(bufwin);
@@ -822,8 +822,8 @@ void quit() {
 	exit(0);
 }
 
-void setmode(const Action *ac) {
-	if ((mode = (Mode)ac->arg.i) == MODE_SELECT && curbuf) {
+void setmode(const struct Action *ac) {
+	if ((mode = (enum Mode)ac->arg.i) == MODE_SELECT && curbuf) {
 		/* Capture start of visual selection */
 		int x = curbuf->cursor.c.x;
 		int y = curbuf->cursor.c.y;
@@ -831,9 +831,9 @@ void setmode(const Action *ac) {
 	}
 }
 
-void save(const Action *ac) {
+void save(const struct Action *ac) {
 	FILE *src, *bak;
-	Line *ln;
+	struct Line *ln;
 
 	if (!ac->arg.v && !curbuf->path) return;
 	if (backup_on_write
@@ -847,7 +847,7 @@ void save(const Action *ac) {
 		fclose(src);
 	}
 	if (!(src = fopen(ac->arg.v ? ac->arg.v : curbuf->path, "w+"))) return;
-	for (ln = curbuf->lines; ln; ln = ln->next) {
+	for (ln = mfirstline(curbuf); ln; ln = ln->next) {
 		fputws(ln->data, src);
 		if (ln->next) fputws(L"\n", src);
 	}
@@ -855,24 +855,24 @@ void save(const Action *ac) {
 	fclose(src);
 }
 
-void readfile(const Action *ac) {
+void readfile(const struct Action *ac) {
 	mreadfile((curbuf = mnewbuf()), ac->arg.v);
 }
 
-void readstr(const Action *ac) {
+void readstr(const struct Action *ac) {
 	mreadstr(curbuf, (char*)ac->arg.v);
 }
 
-void print(const Action *ac) {
+void print(const struct Action *ac) {
 	mreadstr(cmdbuf, (char*)ac->arg.v);
 	resize();
 }
 
-void find(const Action *ac) {
+void find(const struct Action *ac) {
 	if (ac->arg.v) {
 		char msgbuf[100];
 		regex_t reg;
-		Line *ln, *prev_ln = curbuf->curline;
+		struct Line *ln, *prev_ln = curbuf->curline;
 		int i, x, y = 0, wrapped = 0;
 
 		if ((i = regcomp(&reg, ac->arg.v, 0))) {
@@ -900,7 +900,7 @@ void find(const Action *ac) {
 			}
 			if (!ln->next && !wrapped) {
 				/* Wrap to beginning of buffer, but only once */
-				ln = curbuf->curline = curbuf->lines;
+				ln = curbuf->curline = mfirstline(curbuf);
 				y = 0;
 				wrapped = 1;
 			}
@@ -912,7 +912,7 @@ void find(const Action *ac) {
 }
 
 void listbuffers() {
-	Buffer *buf = buflist;
+	struct Buffer *buf = curbuf;
 	int i = 0;
 	do {
 		char str[64];
@@ -926,11 +926,11 @@ void listbuffers() {
 	} while((buf = buf->next));
 }
 
-void motion(const Action *ac) {
+void motion(const struct Action *ac) {
 	mmove(curbuf, ac->arg.x, ac->arg.y);
 }
 
-void jump(const Action *ac) {
+void jump(const struct Action *ac) {
 	mjump(curbuf, ac->arg.m);
 }
 
@@ -955,34 +955,28 @@ void cls() {
 	resize();
 }
 
-void bufsel(const Action *ac) {
+void bufsel(const struct Action *ac) {
 	/* TODO: Forward/backward multiple buffers */
-	if (ac->arg.i < 0) {
+	/*if (ac->arg.i < 0) {
 		if (curbuf->prev) curbuf = curbuf->prev;
 	} else if (ac->arg.i > 0) {
 		if (curbuf->next) curbuf = curbuf->next;
-	}
+	}*/
 }
 
-void bufdel(const Action *ac) {
+void bufdel(const struct Action *ac) {
 	if (!ac->arg.i) {
 		mfreebuf(curbuf);
+		resize();
 	}
 }
 
-void insert(const Action *ac) {
+void insert(const struct Action *ac) {
 	minsert(curbuf, ac->arg.i);
 }
 
 void freeln() {
-	Line *ln = curbuf->curline, *next = ln->next ? ln->next : ln->prev;
-	if (next) {
-		curbuf->curline = next;
-		mfreeln(ln);
-		if (ln == curbuf->lines) {
-			curbuf->lines = next;
-		}
-	}
+	mfreeln(curbuf, curbuf->curline);
 }
 
 void append() {

@@ -23,7 +23,7 @@ const short color_pairs[NUM_COLOR_PAIRS][2] = {
 const char manual_path[] = "readme.txt";
 
 /* See mett.c for function declarations */
-const Action buffer_actions[] = {
+const struct Action buffer_actions[] = {
 	/* Command      Shortcut       Function     Argument(s) */
 
 	/* Movement */
@@ -40,8 +40,8 @@ const Action buffer_actions[] = {
 	{  NULL,        KEY_BACKSPACE, motion,      { .x = -1 } },
 	{  NULL,        L'\n',         motion,      { .y = +1 } },
 	{  NULL,        L' ',          motion,      { .x = +1 } },
-	{  L"home",     KEY_HOME,      motion,      { .y = -(1<<30) } },
-	{  L"end",      KEY_END,       motion,      { .y = +(1<<30) } },
+	{  L"home",     L'g',          motion,      { .y = -(1<<30) } },
+	{  L"end",      L'G',          motion,      { .y = +(1<<30) } },
 	{  L"pgup",     KEY_PPAGE,     pgup,        {{ 0 }} },
 	{  L"pgdown",   KEY_NPAGE,     pgdown,      {{ 0 }} },
 	{  NULL,        L'0',          jump,        { .m = MARKER_START } },
@@ -95,8 +95,8 @@ static bool auto_indent = true;
 /* Always have the cursor at the center of the screen */
 static bool always_centered = false;
 
-/* Maximum line size in bytes until reallocation */
-static const unsigned default_linebuf_size = 128*4;
+/* Maximum size in bytes of a line. If exceeded, it has to be resized at a cost */
+static const unsigned default_linebuf_size = 1024;
 
 static const unsigned tab_width = 4;
 
