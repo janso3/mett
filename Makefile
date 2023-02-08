@@ -2,7 +2,7 @@ INCS = -I/usr/include/ncursesw/
 CFLAGS = $(INCS) -g -std=c11 -Wall -Wextra -pedantic-errors
 LDFLAGS = -lncursesw -lm
 
-PREFIX = /usr/local
+PREFIX = "${DESTDIR}/usr/local"
 
 OBJ = mett.o
 
