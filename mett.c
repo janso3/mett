@@ -19,7 +19,6 @@
 #include <wctype.h>
 
 #define SWAP(X, Y, T) { T SWAP = X; X = Y; Y = SWAP; }
-#define BINDABLE(fn) static void fn()
 
 enum Mode {
 	MODE_NORMAL,
@@ -103,29 +102,29 @@ static void mpaintln(struct Buffer*, struct Line*, WINDOW*, int, int, bool);
 static void mpaintbuf(struct Buffer*, WINDOW*, bool);
 static void mpaintcmd();
 
-BINDABLE (resize);
-BINDABLE (repaint);
-BINDABLE (handlemouse);
-BINDABLE (quit);
-BINDABLE (setmode);
-BINDABLE (save);
-BINDABLE (readfile);
-BINDABLE (readstr);
-BINDABLE (print);
-BINDABLE (find);
-BINDABLE (listbuffers);
-BINDABLE (motion);
-BINDABLE (jump);
-BINDABLE (coc);
-BINDABLE (pgup);
-BINDABLE (pgdown);
-BINDABLE (cls);
-BINDABLE (bufsel);
-BINDABLE (bufdel);
-BINDABLE (insert);
-BINDABLE (freeln);
-BINDABLE (append);
-BINDABLE (newln);
+static void resize();
+static void repaint();
+static void handlemouse();
+static void quit();
+static void setmode();
+static void save();
+static void readfile();
+static void readstr();
+static void print();
+static void find();
+static void listbuffers();
+static void motion();
+static void jump();
+static void coc();
+static void pgup();
+static void pgdown();
+static void cls();
+static void bufsel();
+static void bufdel();
+static void insert();
+static void freeln();
+static void append();
+static void newln();
 
 /* Global variables */
 static enum Mode mode = MODE_NORMAL;
